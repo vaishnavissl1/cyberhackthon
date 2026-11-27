@@ -77,8 +77,12 @@ python -m hids_agent.benchmark --raw --events 1000000
 python -m hids_agent demo --live --out runs/presentation
 ~~~
 
+### Demo walkthrough
+
 During the demo, show a live alert and its block line. Open the finished dashboard and expand the Office alert to show its grouped evidence and score. Show the approved file change in the audit trail, then the evaluation and linked simulated blocks. Repeat with detect mode if time permits.
 
 The raw benchmark reports wall-clock throughput and peak process working set on Windows or peak resident set size on supported Unix hosts. It covers reading raw JSONL, detection, simulated response, evaluation and dashboard publication. Its background traffic is deliberately ordinary. This exercises throughput with sparse alerts and does not bound memory for candidate-heavy workloads.
+
+In one Windows run, 1,000,000 raw events took 151.829 s (6,586 events/s) and peaked at 131.1 MiB of process working set. The run matched 4/4 labeled sequences with 0 false alarms and 0 detection processing errors.
 
 Wazuh documents an agent, server, indexer and dashboard. OSSEC documents host log analysis, integrity checking and active response. This project focuses on a local replay and simulated decisions. [Wazuh components](https://documentation.wazuh.com/current/getting-started/components/index.html) · [OSSEC overview](https://www.ossec.net/docs/)
