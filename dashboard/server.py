@@ -2,31 +2,36 @@
 
 import argparse
 from datetime import datetime, timezone
-from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 import json
 from pathlib import Path
 import re
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 from uuid import uuid4
 
 from hids_agent.handoff import process
-from hids_agent.contract import lines, object_record
-from hids_agent.evaluate import evaluate
+from hids_agent.contract import lines, object_record, read_json, write_json
+from hids_agent.dashboard import render
+from hids_agent.evaluate import evaluate, score_run
 from hids_agent.replay import demo, replay_files
-from hids_agent.contract import write_json
-from hids_agent.outputs import new_folder, save_run
+from hids_agent.outputs import load_run, new_folder, save_run
+from .pages import case_folder, status_label, workspace
+
+ARTIFACTS = {"report.md", "report.json", "blocklist.jsonl", "alerts.json", "summary.json", "audit.jsonl"}
+CASE_INPUTS = ARTIFACTS | {"incidents.json", "watch.jsonl", "sweep.json"}
 
 
 class Cases(BaseHTTPRequestHandler):
-    def reply(self, code, content, mime="text/html; charset=utf-8"):
-        data = content.encode("utf-8")
+    def reply(self, code, content, mime="text/html; charset=utf-8", *, filename=None):
+        data = content.encode("utf-8") if isinstance(content, str) else content
         self.send_response(code)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Cache-Control", "no-store")
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
         self.wfile.write(data)
 
@@ -39,19 +44,35 @@ class Cases(BaseHTTPRequestHandler):
             return self.reply(403, "Loopback requests only.")
         path = unquote(urlsplit(self.path).path)
         root = self.server.output
-        if path == "/":
-            items = [p for p in root.iterdir() if re.fullmatch(r"[\w-]+", p.name)
-                     and (p / "dashboard.html").is_file() and (p / "dashboard.html").resolve().is_relative_to(root)]
-            links = "".join(f'<li><a href="/case/{escape(p.name)}">{escape(p.name)}</a></li>'
-                            for p in sorted(items, key=lambda p: p.stat().st_mtime, reverse=True))
-            page = Path(__file__).with_name("index.html").read_text(encoding="utf-8")
-            return self.reply(200, page.replace("<!-- cases -->", links or "<li>No completed runs yet.</li>"))
-        match = re.fullmatch(r"/case/([\w-]+)", path)
-        if match:
-            page = (root / match[1] / "dashboard.html").resolve()
-            if page.is_relative_to(root) and page.is_file():
-                return self.reply(200, page.read_text(encoding="utf-8"))
-        self.reply(404, "Case not found.")
+        try:
+            if path in {"/", "/cases"}:
+                return self.reply(200, workspace(root, library=(path == "/cases")))
+            if path == "/assets/replay-campus.jpg":
+                return self.reply(200, Path(__file__).with_name("replay-campus.jpg").read_bytes(), "image/jpeg")
+            match = re.fullmatch(r"/case/([\w-]+)(?:/files/([\w.-]+))?/?", path)
+            if match and (folder := case_folder(root, match[1])):
+                if match[2]:
+                    filename = match[2]
+                    file = (folder / filename).resolve()
+                    if filename in ARTIFACTS and file.parent == folder and file.is_file():
+                        return self.reply(200, file.read_bytes(), "application/octet-stream", filename=filename)
+                else:
+                    return self.case_page(folder, match[1])
+        except (OSError, ValueError, KeyError, TypeError):
+            return self.reply(422, "This replay could not be loaded.", "text/plain; charset=utf-8")
+        self.reply(404, "Case or file not found.", "text/plain; charset=utf-8")
+
+    def case_page(self, folder, name):
+        if any((folder / filename).resolve().parent != folder for filename in CASE_INPUTS):
+            raise ValueError("case files need to stay inside the case directory")
+        report_file = folder / "report.json"
+        run = load_run(folder)
+        report = read_json(report_file) if report_file.is_file() else None
+        if report is None or "status" not in report:
+            report = score_run(run, None)
+        if report["status"] != status_label(report):
+            raise ValueError("unknown report status")
+        return self.reply(200, render(run, report, case_url="/case/" + quote(name)))
 
     def do_POST(self):
         if (not self.local() or self.path != "/run" or

@@ -56,7 +56,7 @@ Stream approval events default to watch records. Use `approvals.from_stream` and
 python -m dashboard.server --root runs
 ~~~
 
-Open [the local dashboard](http://127.0.0.1:8765/). Select development, holdout, or upload raw JSON/JSONL with optional labels, baseline and allow-list. The runner binds to loopback. Standalone `dashboard.html` files also open offline.
+Open [the replay workspace](http://127.0.0.1:8765/). Select development, holdout, or upload raw JSON/JSONL with optional labels, baseline and allow-list. The case library lists completed runs. In a case report, filter alerts by host or severity and download the report and simulated block list. The runner binds to loopback. Standalone `dashboard.html` files also open offline. Keep the report and block journal next to the HTML file to use its download links.
 
 | Output | Contents |
 | --- | --- |

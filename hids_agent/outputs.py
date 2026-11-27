@@ -51,7 +51,7 @@ def load_run(folder):
 
 def publish_report(folder, run, report):
     summary = run["summary"]
-    md = [f"# Replay evaluation Ã‚Â· {report['status']}", "",
+    md = [f"# Replay evaluation · {report['status']}", "",
           f"Source: {summary['source']}  ", f"Mode: {summary['mode']}  ",
           f"Alerts: {len(run['alerts'])}  ", f"Simulated decisions: {len(run['blocks'])}", ""]
     if report["status"] in ("UNSCORED", "INCOMPLETE"):
