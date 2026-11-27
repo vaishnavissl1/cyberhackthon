@@ -161,9 +161,28 @@ def pick(flat: dict, canon: str) -> Any:
 
 # alias -> [(canonical field, priority)], so each event is scanned once
 _ALIAS_INDEX: dict[str, list[tuple[str, int]]] = {}
-for _canon, _names in ALIASES.items():
-    for _prio, _name in enumerate(_names):
-        _ALIAS_INDEX.setdefault(_name, []).append((_canon, _prio))
+_MAPS: dict[str, dict[str, str]] = {"category": {}, "outcome": {}, "action": {}}
+
+
+def configure(schema: dict | None) -> None:
+    """Apply organizer-specific field names and value maps (config "schema").
+    Configured aliases take priority over the built-in ones."""
+    schema = schema or {}
+    _ALIAS_INDEX.clear()
+    extra = {k: [str(x).lower() for x in v] for k, v in (schema.get("field_aliases") or {}).items()}
+    unknown = set(extra) - set(ALIASES)
+    if unknown:
+        raise ValueError(f"schema.field_aliases: unknown field(s) {sorted(unknown)}; "
+                         f"use one of {sorted(ALIASES)}")
+    for canon, names in ALIASES.items():
+        for prio, name in enumerate(list(extra.get(canon, [])) + list(names)):
+            _ALIAS_INDEX.setdefault(name, []).append((canon, prio))
+    for kind in _MAPS:
+        _MAPS[kind] = {str(k).strip().lower(): str(v).strip().lower()
+                       for k, v in (schema.get(f"{kind}_map") or {}).items()}
+
+
+configure(None)
 
 
 def index_fields(flat: dict) -> dict:
@@ -438,6 +457,9 @@ def normalize(raw: dict, seq: int) -> Event:
     text_cat = _category_from_text(str(cat_raw)) if cat_raw is not None and _to_int(cat_raw) is None else None
     if isinstance(cat_raw, str) and _APPROVAL_CATEGORY.search(cat_raw):
         text_cat = "approval"
+    mapped_cat = _MAPS["category"].get(str(cat_raw).strip().lower()) if cat_raw is not None else None
+    if mapped_cat:
+        text_cat = mapped_cat
     explicit_id, eid = _split_ids(flat, text_cat is not None)
     ref = f"id:{explicit_id}" if explicit_id is not None else f"line:{seq}"
     ts_raw = fields.get("ts")
@@ -460,6 +482,10 @@ def normalize(raw: dict, seq: int) -> Event:
             cat = m[0]
             ev.action, ev.outcome = m[1], m[2]
     act_raw = fields.get("action")
+    if act_raw is not None and str(act_raw).strip().lower() in _MAPS["category"] and cat is None:
+        cat = _MAPS["category"][str(act_raw).strip().lower()]
+    if act_raw is not None and str(act_raw).strip().lower() in _MAPS["action"]:
+        act_raw = _MAPS["action"][str(act_raw).strip().lower()]
     if cat is None and act_raw is not None:
         cat = _category_from_text(str(act_raw))
     msg = fields.get("message")
@@ -498,6 +524,9 @@ def normalize(raw: dict, seq: int) -> Event:
         ev.approval = {name: next((flat[k] for k in keys if flat.get(k) not in (None, "")), None)
                        for name, keys in _APPROVAL_KEYS.items()}
 
+    out_raw = fields.get("outcome")
+    if out_raw is not None and str(out_raw).strip().lower() in _MAPS["outcome"]:
+        ev.outcome = _MAPS["outcome"][str(out_raw).strip().lower()]
     if ev.category == "auth":
         if ev.outcome is None:
             ev.outcome = _outcome(fields.get("outcome")) or _outcome(act_raw) or _outcome(cat_raw)

@@ -127,9 +127,16 @@ class Engine:
         for out in outs:
             for item in out:
                 self._handle(item, ev)
+        for item in self.rules[0].tick(ev.ts):
+            self._handle(item, ev)
         self._n += 1
         if self._n % 5000 == 0:
             self.rules[0].sweep(self.last_ts)
+
+    def finish(self) -> None:
+        """End of stream: settle pending decisions."""
+        for item in self.rules[0].finish():
+            self._handle(item, None)
 
     # --------------------------------------------------------------- handlers
     def _handle(self, item, ev: Event) -> None:

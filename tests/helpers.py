@@ -54,7 +54,7 @@ def run(events, cfg=None, allow=None, baseline=None, mode="prevent"):
     pipe = Pipeline(eng, c, Outputs(None, quiet=True))
     for i, e in enumerate(events, 1):
         pipe.push(i, e)
-    pipe.flush()
+    pipe.finish()
     return eng, pipe
 
 
@@ -73,7 +73,7 @@ def run_text(text, **kw):
     pipe = Pipeline(eng, c, Outputs(None, quiet=True))
     for seq, raw in items:
         pipe.push(seq, raw)
-    pipe.flush()
+    pipe.finish()
     return eng, pipe
 
 

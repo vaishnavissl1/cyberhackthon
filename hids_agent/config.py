@@ -19,8 +19,20 @@ DEFAULTS: dict[str, Any] = {
         "spray_users": 5, "dist_sources": 3,
         "skip_machine_accounts": True,
         "preempt_block_factor": 0,         # optional failure-only block at n_fail*factor
-        "alert_without_success": False,    # True: failures alone raise an alert (per source)
+        "alert_without_success": False,    # True: failures alone raise an alert (per source / per account)
         "failures_without_success": 10,    # failures within window_s needed for that alert
+        # A password spray is confirmed only after spray_grace_s, and only if at most this
+        # share of the failing users then logged in from the same address. Users behind a
+        # shared address (NAT, proxy) mistype and then log in; sprayed accounts do not.
+        "spray_max_success_ratio": 0.5,
+        "spray_grace_s": 120,
+    },
+    "schema": {
+        # Organizer-specific names, so a new stream format needs no code change.
+        "field_aliases": {},               # e.g. {"user": ["acct"], "src_ip": ["origin"]}
+        "category_map": {},                # raw event type -> auth | process | file | service | approval
+        "outcome_map": {},                 # raw outcome -> success | failure
+        "action_map": {},                  # raw action -> start | end | create | modify | delete | rename | chmod | install
     },
     "approvals": {
         # Approval events inside the stream. Off by default: anyone who can write to the

@@ -24,7 +24,7 @@ from pathlib import Path
 from .allowlist import load_allowlist
 from .config import load_config, load_structured
 from .engine import Engine, load_baseline
-from .normalize import normalize
+from .normalize import configure as configure_schema, normalize
 from .evaluate import score_run
 from .outputs import publish_report
 from .contract import write_lines
@@ -261,6 +261,7 @@ class Pipeline:
 
     def __init__(self, engine: Engine, cfg: dict, outputs: Outputs):
         self.e = engine
+        configure_schema(cfg.get("schema"))
         self.slack = float(cfg["reorder_slack_s"])
         self.cap = int(cfg["dedup_window"])
         self.seen: OrderedDict = OrderedDict()
@@ -313,6 +314,16 @@ class Pipeline:
         while self.heap:
             self._emit(heapq.heappop(self.heap)[2])
 
+    def finish(self) -> None:
+        """End of stream: process everything and settle decisions still waiting
+        for more evidence (such as a password spray in its grace period)."""
+        self.flush()
+        try:
+            self.e.finish()
+        except Exception as ex:
+            self.stats["errors"] += 1
+            self.o.write("errors.log", {"__error__": f"finish: {ex!r}"})
+
 
 def run(args, *, overrides=None, source=None) -> dict:
     settings = dict(overrides or {})
@@ -364,7 +375,7 @@ def run(args, *, overrides=None, source=None) -> dict:
     except KeyboardInterrupt:
         interrupted = True
         print("[agent] interrupted, flushing", file=sys.stderr)
-    pipe.flush()
+    pipe.finish()
     elapsed = time.perf_counter() - t0
 
     summary = {

@@ -165,6 +165,12 @@ class BruteForce:
         self.fail_n = int(c["failures_without_success"])
         self.failed: dict[tuple, dict] = {}      # (host, source) -> failed-only alert state
         self.src_users: dict[tuple, dict] = {}   # (host, source) -> {user: last failure ts}
+        self.failed_acct: dict[tuple, dict] = {}  # (host, user) -> distributed failed-only state
+        self.spray_ratio = float(c["spray_max_success_ratio"])
+        self.spray_grace = float(c["spray_grace_s"])
+        self.successes: dict[tuple, deque] = defaultdict(deque)   # (host, ip) -> (ts, user)
+        self.pending: dict[tuple, dict] = {}     # (kind, host, ip) -> spray awaiting its grace period
+        self.next_deadline = float("inf")
 
     def _trim(self, dq: deque, now: float) -> None:
         horizon = self.w + self.after
@@ -194,6 +200,57 @@ class BruteForce:
         for k in [k for k, st in self.failed.items() if now - st["last"] > horizon]:
             del self.failed[k]
             self.src_users.pop(k, None)
+        for k in [k for k, st in self.failed_acct.items() if now - st["last"] > horizon]:
+            del self.failed_acct[k]
+        keep = horizon + self.spray_grace
+        for k in [k for k, dq in self.successes.items() if not dq or now - dq[-1][0] > keep]:
+            del self.successes[k]
+
+    # ---- password spray grace period -------------------------------------
+    def _defer_spray(self, kind: str, cand, host: str, ip: str, users: set, since: float) -> None:
+        key = (kind, host, ip)
+        p = self.pending.get(key)
+        if p is None:
+            self.pending[key] = {"cand": cand, "users": set(users), "since": since,
+                                 "deadline": cand.ts + self.spray_grace}
+            self.next_deadline = min(self.next_deadline, cand.ts + self.spray_grace)
+        else:
+            p["users"] |= users
+            p["cand"].evidence = sorted(set(p["cand"].evidence) | set(cand.evidence))
+            if cand.escalates:          # a success upgrades a failed-only spray
+                cand.evidence = p["cand"].evidence
+                p["cand"] = cand
+
+    def _settle(self, key: tuple, p: dict) -> list:
+        _, host, ip = key
+        logged_in = {u for t, u in self.successes.get((host, ip), ()) if t >= p["since"]}
+        users = {u for u in p["users"] if u}
+        share = len(users & logged_in) / len(users) if users else 0.0
+        c = p["cand"]
+        if share > self.spray_ratio:
+            return [Watch(self.name, host, c.ts,
+                          f"not a spray: {len(users & logged_in)}/{len(users)} failing users then logged "
+                          f"in from {ip} (shared address)", c.evidence,
+                          {"src_ip": ip, "success_share": round(share, 2)})]
+        c.signals = list(c.signals) + [(f"{len(users & logged_in)}/{len(users)} sprayed users logged in", 0)]
+        c.context = dict(c.context, success_share=round(share, 2))
+        return [c]
+
+    def tick(self, now: float) -> list:
+        if now < self.next_deadline:
+            return []
+        out: list = []
+        for key in [k for k, p in self.pending.items() if p["deadline"] <= now]:
+            out += self._settle(key, self.pending.pop(key))
+        self.next_deadline = min((p["deadline"] for p in self.pending.values()), default=float("inf"))
+        return out
+
+    def finish(self) -> list:
+        out: list = []
+        for key in list(self.pending):
+            out += self._settle(key, self.pending.pop(key))
+        self.next_deadline = float("inf")
+        return out
 
     def _burst(self, dq: deque, now: float) -> list:
         """Failures inside the window ending at the last failure, provided the last
@@ -219,6 +276,9 @@ class BruteForce:
         users = self.src_users.setdefault(key, {})
         users[ev.user] = max(ts, users.get(ev.user, ts))
         spray = False
+        acct = self.failed_acct.get((host, ev.user))
+        if acct and acct["reported"] and not st["reported"]:
+            return None     # this source is part of a distributed attack already alerted per account
         if st["reported"]:
             if allowed:
                 return None
@@ -241,6 +301,11 @@ class BruteForce:
                 burst = [x for x in self.by_src[(host, ev.src_ip)] if ts - x[0] <= self.w]
             st["reported"] = True
             refs = [x[1] for x in burst]
+        if spray and not allowed:
+            since = min(t for t in users.values())
+            cand = self._failed_only_cand(ev, refs, users, spray=True)
+            self._defer_spray("failed", cand, host, ev.src_ip, set(users), since)
+            return None
         who = ev.src_ip or f"user {ev.user}"
         many = len(users) > 1
         title = (f"password spray with no success yet: {len(users)} users failed from {who}" if spray
@@ -258,6 +323,52 @@ class BruteForce:
                           "src_ip": ev.src_ip},
                          [("block_ip", ev.src_ip)] if ev.src_ip else [],
                          user=user, src_ip=ev.src_ip)
+
+    def _failed_only_cand(self, ev: Event, refs: list, users: dict, spray: bool):
+        who = ev.src_ip or f"user {ev.user}"
+        title = (f"password spray with no success yet: {len(users)} users failed from {who}" if spray
+                 else f"{len(refs)} failed logons from {who} with no success yet")
+        sig = [("variant:failed_only", 0)]
+        if ev.src_ip and not is_private_ip(ev.src_ip):
+            sig.append(("external source IP", 10))
+        return Candidate(self.name, ev.host, ev.src_ip or f"user:{ev.user}", ev.ts, title,
+                         ["T1110 Brute Force", "T1110.003 Password Spraying"], refs, sig,
+                         {"variant": "failed_only_spray", "failures": len(refs), "user": None,
+                          "src_ip": ev.src_ip},
+                         [("block_ip", ev.src_ip)] if ev.src_ip else [], user=None, src_ip=ev.src_ip)
+
+    def _failed_only_account(self, ev: Event, allowed: dict | None):
+        """Many sources failing against one account, with no success yet."""
+        host, ts, user = ev.host, ev.ts, ev.user
+        if not user:
+            return None
+        key = (host, user)
+        st = self.failed_acct.get(key)
+        if st is None or ts - st["last"] > self.w:
+            st = self.failed_acct[key] = {"reported": False, "pending": [], "last": ts}
+        st["last"] = max(st["last"], ts)
+        if st["reported"]:
+            st["pending"].append(ev.ref)
+            if len(st["pending"]) < self.n or allowed:
+                return None
+            refs, st["pending"] = st["pending"], []
+            sources = []
+        else:
+            burst = [x for x in self.by_user[key] if ts - x[0] <= self.w]
+            sources = sorted({x[2] for x in burst if x[2] != "unknown-src"})
+            if len(burst) < self.fail_n or len(sources) < self.dist:
+                return None
+            st["reported"] = True
+            refs = [x[1] for x in burst]
+        title = f"distributed: {len(refs)} failed logons for {user} from {len(sources) or 'several'} sources, no success yet"
+        if allowed:
+            return Suppressed(self.name, host, ts, "approved authentication source", allowed, refs,
+                              {"title": title, "user": user})
+        return Candidate(self.name, host, f"user:{user}", ts, title, ["T1110 Brute Force"], refs,
+                         [("variant:failed_only_distributed", 0)],
+                         {"variant": "failed_only_distributed", "failures": len(refs), "user": user,
+                          "sources": sources[:50]},
+                         [("block_ip", s) for s in sources[:20]], user=user)
 
     def on_event(self, ev: Event) -> list:
         if ev.category != "auth" or ev.outcome not in ("success", "failure"):
@@ -280,6 +391,9 @@ class BruteForce:
                 item = self._failed_only(ev, k, allowed)
                 if item is not None:
                     out.append(item)
+                item = self._failed_only_account(ev, allowed)
+                if item is not None:
+                    out.append(item)
             if allowed or len(self.pair[k]) < self.n:
                 return out
             need_watch = k not in self.watched
@@ -299,6 +413,13 @@ class BruteForce:
             return out
 
         # ---- success: check the three variants ------------------------------
+        if ev.src_ip:
+            dq = self.successes[(host, ip)]
+            self._add(dq, (ts, user))
+            while dq and ts - dq[0][0] > self.w + self.after + self.spray_grace:
+                dq.popleft()
+            while len(dq) > self.MAX_KEEP:
+                dq.popleft()
         variants = []
         b = self._burst(self.pair.get((host, ip, user), deque()), ts)
         if len(b) >= self.n:
@@ -346,6 +467,10 @@ class BruteForce:
         source = (host, ev.src_ip or f"user:{user}")
         self.failed.pop(source, None)
         self.src_users.pop(source, None)
+        self.failed_acct.pop((host, user), None)
+        if kind == "spray" and not allowed:
+            self._defer_spray("success", cand, host, ip, su, sb[0][0])
+            return []
         if allowed:
             return [Suppressed(self.name, host, ts, "approved authentication source", allowed,
                                all_refs, {"title": title, "user": user, "src_ip": ev.src_ip})]
@@ -562,6 +687,10 @@ class TempService:
 # ---------------------------------------------------------------------------
 # R3 office program starting a shell
 # ---------------------------------------------------------------------------
+_OFFICE_HOMES = ("c:/program files/", "c:/program files (x86)/", "/usr/lib/libreoffice/",
+                 "/usr/lib64/libreoffice/", "/opt/", "/usr/bin/", "/applications/", "/snap/")
+
+
 class OfficeShell:
     name = "office_shell"
     MITRE = ["T1566.001 Phishing: Spearphishing Attachment", "T1204.002 User Execution: Malicious File",
@@ -602,7 +731,10 @@ class OfficeShell:
             sig.append(("suspicious command line (encoded/download/hidden)", 15))
         if _temp_level(ev.image, self.cfg):
             sig.append(("child binary in temp folder", 10))
-        entity = f"{anc['base']}:{anc['pid']}" if anc.get("pid") else f"{anc['base']}"
+        office_path = anc.get("image") or ""
+        if "/" in office_path and not office_path.startswith(_OFFICE_HOMES):
+            sig.append((f"Office program runs from an unusual folder (possible sideloading): {office_path}", 15))
+        entity =f"{anc['base']}:{anc['pid']}" if anc.get("pid") else f"{anc['base']}"
         blocks = [("kill_process", f"{ev.host}:{ev.pid}" if ev.pid else (ev.image or child))]
         if anc.get("pid"):
             blocks.append(("kill_process", f"{ev.host}:{anc['pid']}"))

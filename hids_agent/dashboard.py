@@ -54,6 +54,82 @@ def chart(volume, alerts):
             'Events in teal, alerts in amber. Each uses its own scale.</p>')
 
 
+TEAL, AMBER, ALARM, MUTED = "#0e8a73", "#b96e12", "#d03b3b", "#9aa9a7"
+
+
+def hbars(title, rows, legend=None, unit=""):
+    """Horizontal bar chart as inline SVG. rows: (label, [(value, color, series)], value_text).
+    Every bar has a hover title and a value label, so color never carries meaning alone."""
+    if not rows:
+        return ""
+    top = max((sum(v for v, _, _ in segs) for _, segs, _ in rows), default=0) or 1
+    width, left, right, row_h = 760, 210, 175, 28
+    plot = width - left - right
+    height = len(rows) * row_h + 8
+    parts = []
+    for i, (label, segs, text) in enumerate(rows):
+        y = 4 + i * row_h
+        parts.append(f'<text x="{left - 10}" y="{y + 17}" text-anchor="end" class="lbl">{esc(label)}</text>')
+        x = left
+        for value, color, series in segs:
+            w = plot * value / top
+            if w <= 0:
+                continue
+            seg = max(w - 2, 1.5)   # 2px surface gap between stacked segments
+            parts.append(f'<rect x="{x:.1f}" y="{y + 5}" width="{seg:.1f}" height="16" rx="3" fill="{color}">'
+                         f'<title>{esc(label)}: {esc(series)} {value:g}{esc(unit)}</title></rect>')
+            x += w
+        parts.append(f'<text x="{x + 6:.1f}" y="{y + 17}" class="val">{esc(text)}</text>')
+    key = ""
+    if legend:
+        key = '<p class="key">' + "".join(
+            f'<span><i style="background:{c}"></i>{esc(n)}</span>' for n, c in legend) + "</p>"
+    return (f'<figure class="bars"><figcaption>{esc(title)}</figcaption>{key}'
+            f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="{esc(title)}">{"".join(parts)}</svg></figure>')
+
+
+def charts(run, report):
+    """Charts for every scored result; each has a matching table on the page."""
+    out = []
+    sev_order = ["critical", "high", "medium", "low", "info"]
+    counts = {s: 0 for s in sev_order}
+    for a in run["alerts"]:
+        counts[a["severity"]] = counts.get(a["severity"], 0) + 1
+    out.append(hbars("Alerts by severity", [(s, [(n, TEAL, "alerts")], str(n))
+                                            for s, n in counts.items() if n or s in ("critical", "high", "medium")]))
+    if report.get("status") in ("PASS", "FAIL"):
+        out.append(hbars("Recall by rule: labeled attacks found",
+                         [(rule, [(r["detected"], TEAL, "found"), (r["sequences"] - r["detected"], MUTED, "missed")],
+                           f'{r["detected"]} of {r["sequences"]}' + ("" if r["detected"] == r["sequences"] else " (missed shown gray)"))
+                          for rule, r in report.get("per_rule", {}).items() if r["sequences"]],
+                         legend=[("found", TEAL), ("missed", MUTED)]))
+        per_rule = {}
+        for a in run["alerts"]:
+            row = per_rule.setdefault(a["rule"], [0, 0])
+            row[0 if report.get("matches", {}).get(a["id"]) else 1] += 1
+        out.append(hbars("Alerts by rule: true detections and false alarms",
+                         [(rule, [(t, TEAL, "true"), (f, ALARM, "false alarm")],
+                           f"{t} true" + (f", {f} false alarm{'s' if f > 1 else ''}" if f else ", 0 false"))
+                          for rule, (t, f) in sorted(per_rule.items())],
+                         legend=[("true detection", TEAL), ("false alarm", ALARM)]))
+        lat = sorted(report.get("latency_s", {}).items(), key=lambda kv: -kv[1])
+        out.append(hbars("Detection latency per attack (seconds from first attack event to alert)",
+                         [(k, [(max(v, 0), TEAL, "latency")], f"{v:g} s") for k, v in lat], unit=" s"))
+    trials = (run.get("sweep") or {}).get("trials", []) if isinstance(run.get("sweep"), dict) else []
+    if trials:
+        outcomes: dict = {}
+        for t in trials:
+            key = (t.get("recall") or 0, t.get("false_alarms") or 0)
+            outcomes[key] = outcomes.get(key, 0) + 1
+        rows = [(f"recall {percent(r)}, {fa} false alarm{'s' if fa != 1 else ''}",
+                 [(n, TEAL if r >= 1 and fa <= 2 else MUTED, "trials")],
+                 f"{n} trial{'s' if n != 1 else ''}" + (" (meets target)" if r >= 1 and fa <= 2 else ""))
+                for (r, fa), n in sorted(outcomes.items(), key=lambda kv: (-kv[0][0], kv[0][1]))]
+        out.append(hbars(f"Tuning on development: outcome of {len(trials)} threshold settings", rows,
+                         legend=[("meets core target", TEAL), ("misses an attack or too many false alarms", MUTED)]))
+    return "".join(c for c in out if c)
+
+
 def render(run, report):
     summary = run["summary"]
     status = report["status"]
@@ -115,4 +191,5 @@ def render(run, report):
         status=esc(status), events=esc(summary["events"] if summary["events"] else "—"), throughput=throughput, severity=severity,
         alert_count=len(run["alerts"]), metrics=metrics, volume=chart(summary["events_per_minute"], run["alerts"]),
         alerts="".join(f'<div class="host"><h3>{esc(host)}</h3>{"".join(rows)}</div>' for host, rows in alerts.items()) or '<p class="empty">No confirmed detections.</p>', rules=rules,
-        decisions=decisions, notes=notes, incidents=incidents, match_info=match_info, sweep=sweep_table)
+        decisions=decisions, notes=notes, incidents=incidents, match_info=match_info, sweep=sweep_table,
+        charts=charts(run, report))
