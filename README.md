@@ -88,7 +88,9 @@ Stream approval events default to watch records. Use `approvals.from_stream` and
 python -m dashboard.server --root runs
 ~~~
 
-Open [the local dashboard](http://127.0.0.1:8765/). Select development, holdout, or upload raw JSON/JSONL with optional labels, baseline and allow-list. The runner binds to loopback. Standalone `dashboard.html` files also open offline.
+Open the [home page](http://127.0.0.1:8765/), [new replay page](http://127.0.0.1:8765/replay), or [case library](http://127.0.0.1:8765/cases). The new replay page supports bundled streams and raw JSON/JSONL with optional labels, baseline and allow-list. Each case has separate pages for overview, alerts, incidents, evaluation, simulated response and audit. Use the alerts page to filter by host or severity.
+
+The runner binds to loopback. To browse offline, open `dashboard.html` and keep the other `dashboard-*.html` files, report and block journal together in the run folder.
 
 | Output | Contents |
 | --- | --- |
@@ -96,7 +98,7 @@ Open [the local dashboard](http://127.0.0.1:8765/). Select development, holdout,
 | `blocklist.jsonl` | Simulated actions with final reverse links, protected status and time-to-live |
 | `audit.jsonl`, `watch.jsonl` | Approved changes and observations that fall short of a confirmed alert |
 | `incidents.json`, `summary.json` | Host incidents, event volume, input quality and throughput |
-| `report.json`, `report.md`, `dashboard.html` | Evaluation and review |
+| `report.json`, `report.md`, `dashboard.html`, `dashboard-*.html` | Evaluation and offline case pages |
 | `sweep.json` | Development tuning trials when supplied through `--sweep` |
 
 The default response records blocks after a confirmed detection. A failure-only IP block can be enabled through `bruteforce.preempt_block_factor`. It earns no evaluation credit by itself. A file change without a comparable hash can raise an unverified alert and receives no simulated block. Decision de-duplication is per host within the configured TTL.

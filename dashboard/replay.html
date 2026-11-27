@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>New replay | Replay Console</title>
+  <style>$theme</style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="top-frame">
+    <nav class="topbar solid" aria-label="Main navigation">
+      <a class="brand" href="/"><span class="mark" aria-hidden="true"><i></i></span>Replay Console</a>
+      <div class="top-links"><a href="/">Overview</a><a href="/replay" aria-current="page">New replay</a><a href="/cases">Cases</a></div>
+
+    </nav>
+  </div>
+  <header class="hero hero--compact"><div class="shell hero-inner">
+    <h1>New replay</h1>
+    <p>Run a synthetic fixture or analyze host telemetry from your own stream.</p>
+  </div></header>
+  <main id="main" class="shell library runner-main">
+      <section class="panel" aria-labelledby="run-title">
+        <h2 id="run-title">Replay settings</h2>
+        <p class="panel-intro">Choose a bundled stream or import your own telemetry.</p>
+        <form id="run">
+          <div class="fields">
+            <label>Event source
+              <select id="split">
+                <option value="dev">Synthetic development</option>
+                <option value="holdout">Synthetic holdout</option>
+                <option value="raw">Upload raw host events</option>
+                <option value="import">Upload candidate handoff</option>
+              </select>
+            </label>
+            <label>Response mode
+              <select id="mode">
+                <option value="prevent">Prevent (simulated)</option>
+                <option value="detect">Detect only</option>
+              </select>
+            </label>
+          </div>
+          <div id="uploads" class="uploads" hidden>
+            <label><span id="input-label">Event file</span><input id="handoff" type="file" accept=".json,.jsonl,.ndjson"></label>
+            <label>Sequence labels (optional)<input id="labels" type="file" accept=".json"></label>
+            <div id="raw-policy" class="fields" hidden>
+              <label>Hash baseline (optional)<input id="baseline" type="file" accept=".json"></label>
+              <label>Allow-list (optional)<input id="allowlist" type="file" accept=".json"></label>
+            </div>
+            <label id="handoff-policy" hidden>Protected IPs and users (optional)<input id="protected" type="file" accept=".json"></label>
+          </div>
+          <div class="form-footer">
+            <button class="button" id="submit" type="submit">Run replay <span aria-hidden="true">→</span></button>
+            <p id="message" role="status" aria-live="polite">Blocks are recorded as simulated decisions.</p>
+          </div>
+        </form>
+      </section>
+    <aside class="panel runner-help" aria-labelledby="replay-inputs">
+      <h2 id="replay-inputs">Input formats</h2>
+      <p><strong>Raw host events</strong> accept JSON or JSONL. Add sequence labels to score the run. Add a hash baseline and allow-list to check file integrity and approved activity.</p>
+      <p><strong>Candidate handoff</strong> accepts JSONL from a detector integration.</p>
+    </aside>
+  </main>
+  <footer class="footer"><div class="shell"><strong>Replay Console</strong><a href="/cases">Case library</a></div></footer>
+  <script>
+    const field = id => document.getElementById(id);
+    function updateInputs() {
+      const kind = field('split').value;
+      const raw = kind === 'raw';
+      const upload = raw || kind === 'import';
+      field('uploads').hidden = !upload;
+      field('raw-policy').hidden = !raw;
+      field('handoff-policy').hidden = raw;
+      field('handoff').required = upload;
+      field('handoff').accept = raw ? '.json,.jsonl,.ndjson' : '.jsonl,.ndjson,.txt';
+      field('input-label').textContent = raw ? 'Raw event JSON or JSONL' : 'Candidate JSONL';
+    }
+    field('split').addEventListener('change', updateInputs);
+    updateInputs();
+
+    field('run').addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = field('submit');
+      const message = field('message');
+      button.disabled = true;
+      message.removeAttribute('data-error');
+      message.textContent = 'Processing replay…';
+      try {
+        const payload = {split: field('split').value, mode: field('mode').value};
+        const raw = payload.split === 'raw';
+        if (raw || payload.split === 'import') {
+          const file = field('handoff').files[0];
+          if (!file) throw new Error('Choose an input file.');
+          const fields = raw ? ['labels', 'baseline', 'allowlist'] : ['labels', 'protected'];
+          const selected = fields.filter(key => field(key).files.length);
+          if (selected.reduce((size, key) => size + field(key).files[0].size, file.size) > 8 * 1024 * 1024) {
+            throw new Error('Choose files under 8 MiB total.');
+          }
+          payload[raw ? 'events' : 'handoff'] = await file.text();
+          for (const key of selected) {
+            const attachment = field(key).files[0];
+            try {
+              payload[key === 'protected' ? 'never_block' : key] = JSON.parse(await attachment.text());
+            } catch {
+              throw new Error('Invalid JSON in ' + attachment.name + '.');
+            }
+          }
+        }
+        const response = await fetch('/run', {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error(await response.text());
+        location.assign((await response.json()).url);
+      } catch (error) {
+        message.textContent = error.message;
+        message.setAttribute('data-error', '');
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

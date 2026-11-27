@@ -1,44 +1,44 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Replay workspace</title><style>
-*{box-sizing:border-box}body{margin:0;background:#f8faf8;color:#193338;font:16px/1.5 "Segoe UI",system-ui,sans-serif}
-header{background:#103137;color:#f1f8f5;border-bottom:6px solid #80d6b2;padding:30px max(5vw,calc((100vw - 900px)/2))}
-h1{font-size:clamp(2.5rem,5vw,3.8rem);letter-spacing:-.05em;margin:0}main{max-width:960px;margin:30px auto;padding:0 30px;display:grid;gap:32px;grid-template-columns:1fr 1fr}
-section{border-top:1px solid #bbcecb}h2{font-size:1.4rem}label{display:block;margin:15px 0}select,input{display:block;font:inherit;max-width:100%;margin-top:5px}
-select{width:100%;padding:6px}button{border:0;border-radius:5px;color:white;background:#08695c;font:600 1rem "Segoe UI",sans-serif;padding:10px 18px;cursor:pointer}
-a{color:#08695c}ul{padding-left:1.2em}li{padding:4px}#message{color:#80351d}button:disabled{opacity:.65}
-@media(max-width:670px){main{grid-template-columns:1fr;padding:0 18px}header{padding:22px 18px}}
-</style></head><body><header><p>Host telemetry</p><h1>Replay workspace</h1></header><main>
-<section><h2>Run a case</h2><form id="run"><label>Input<select id="split"><option value="dev">Development · raw events</option>
-<option value="holdout">Holdout · raw events</option><option value="raw">Import raw host events</option><option value="import">Import candidate handoff</option></select></label>
-<div id="uploads" hidden><label><span id="input-label">Input file</span><input id="handoff" type="file" accept=".json,.jsonl,.ndjson"></label>
-<label>Sequence labels (optional)<input id="labels" type="file" accept=".json"></label>
-<div id="raw-policy" hidden><label>Hash baseline (optional)<input id="baseline" type="file" accept=".json"></label><label>Allow-list (optional)<input id="allowlist" type="file" accept=".json"></label></div>
-<label id="handoff-policy">Protected IPs and users (optional)<input id="protected" type="file" accept=".json"></label></div>
-<label>Response mode<select id="mode"><option value="prevent">Prevent · record simulated blocks</option><option value="detect">Detect · alerts only</option></select></label>
-<button id="submit">Run replay</button><p role="status" id="message"></p></form></section>
-<section><h2>Completed cases</h2><ul><!-- cases --></ul></section></main>
-<script>
-const el=id=>document.getElementById(id);
-el('split').onchange=()=>{
-  const kind=el('split').value;
-  el('uploads').hidden=!['import','raw'].includes(kind);el('handoff').required=!el('uploads').hidden;
-  el('raw-policy').hidden=kind!=='raw';el('handoff-policy').hidden=kind!=='import';
-  el('input-label').textContent=kind==='raw'?'Raw event JSON or JSONL':'Candidate JSONL';
-};
-el('run').onsubmit=async event=>{
-  event.preventDefault();el('submit').disabled=true;el('message').textContent='Processing replay…';
-  try{
-    const request={split:el('split').value,mode:el('mode').value};
-    if(['import','raw'].includes(request.split)){
-      const file=el('handoff').files[0];
-      const fields=request.split==='raw'?['labels','baseline','allowlist']:['labels','protected'];
-      const selected=fields.filter(k=>el(k).files.length);
-      if(!file||selected.reduce((n,k)=>n+el(k).files[0].size,file.size)>8*1024*1024)throw Error('Choose files under 8 MiB total.');
-      request[request.split==='raw'?'events':'handoff']=await file.text();
-      for(const key of selected)request[key==='protected'?'never_block':key]=JSON.parse(await el(key).files[0].text());
-    }
-    const result=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request)});
-    if(!result.ok)throw Error(await result.text());location.assign((await result.json()).url);
-  }catch(error){el('message').textContent=error.message;el('submit').disabled=false}
-};
-</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Replay Console</title>
+  <style>$theme</style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="top-frame">
+    <nav class="topbar" aria-label="Main navigation">
+      <a class="brand" href="/"><span class="mark" aria-hidden="true"><i></i></span>Replay Console</a>
+      <div class="top-links"><a href="/" aria-current="page">Overview</a><a href="/cases">Cases</a></div>
+      <a class="button button--light" href="/replay">New replay <span aria-hidden="true">↗</span></a>
+    </nav>
+  </div>
+  <header class="hero hero--workspace">
+    <div class="shell hero-inner">
+      <span class="eyebrow">HIDS / HIPS</span>
+      <h1>Host event replay<br>and investigation</h1>
+      <p>Replay host telemetry, inspect the alerts your rules raise, and verify simulated prevention against labeled sequences.</p>
+      <div class="hero-actions">
+        <a class="button button--light" href="/replay">Start a replay <span aria-hidden="true">→</span></a>
+        <a class="button button--ghost" href="/cases">Browse cases</a>
+      </div>
+    </div>
+  </header>
+  <main id="main" class="shell">
+    <section class="section" aria-labelledby="recent-title">
+      <div class="section-head"><h2 id="recent-title">Recent replays</h2><a href="/cases">View all cases &#8599;</a></div>
+      <div class="home-cases">$recent</div>
+    </section>
+  </main>
+  <footer class="footer"><div class="shell"><strong>Replay Console</strong><span>Host telemetry and simulated prevention</span></div></footer>
+  <script>
+    const toolbar = document.querySelector('.topbar');
+    const tint = () => toolbar.classList.toggle('solid', window.scrollY > 35);
+    addEventListener('scroll', tint, {passive: true});
+    tint();
+
+  </script>
+</body>
+</html>

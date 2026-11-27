@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cases | Replay Console</title>
+  <style>$theme</style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="top-frame">
+    <nav class="topbar solid" aria-label="Main navigation">
+      <a class="brand" href="/"><span class="mark" aria-hidden="true"><i></i></span>Replay Console</a>
+      <div class="top-links"><a href="/">Overview</a><a href="/cases" aria-current="page">Cases</a></div>
+      <a class="button button--light" href="/replay">New replay <span aria-hidden="true">↗</span></a>
+    </nav>
+  </div>
+  <header class="hero hero--compact"><div class="shell hero-inner">
+    <span class="eyebrow">Case library</span>
+    <h1>Completed replays</h1>
+    <p>Open any recorded run to inspect its alerts, simulated response, and evaluation.</p>
+  </div></header>
+  <main id="main" class="shell library">
+    <div class="section-head"><div><h2>Replay cases</h2><p class="muted">$case_count</p></div></div>
+    <label for="search"><strong>Find a case</strong></label>
+    <p><input type="search" id="search" placeholder="Search by name, source, or result"></p>
+    $cases
+    <p id="no-cases" class="empty" role="status" hidden>No cases match this search.</p>
+  </main>
+  <footer class="footer"><div class="shell"><strong>Replay Console</strong><a href="/replay">Start a replay →</a></div></footer>
+  <script>
+    const cases = [...document.querySelectorAll('.case-row')];
+    document.getElementById('search').addEventListener('input', event => {
+      const search = event.target.value.trim().toLowerCase();
+      for (const row of cases) row.hidden = !row.textContent.toLowerCase().includes(search);
+      document.getElementById('no-cases').hidden = !cases.length || cases.some(row => !row.hidden);
+    });
+  </script>
+</body>
+</html>
