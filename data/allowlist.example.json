@@ -1,0 +1,23 @@
+{
+  "fim": [
+    {
+      "path": "/etc/nginx/nginx.conf",
+      "hash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "expires": "2027-01-01T00:00:00Z",
+      "ticket": "CHG-101"
+    }
+  ],
+  "services": [
+    { "name": "patchsvc", "path": "c:/windows/temp/patchsvc/patch.exe" }
+  ],
+  "process": [
+    { "parent": "excel.exe", "child": "cmd.exe", "cmdline_regex": "^cmd /c .*\\\\macros\\\\report\\.bat$" }
+  ],
+  "auth": [
+    { "src_ip": "10.0.0.250/32", "note": "vulnerability scanner" }
+  ],
+  "never_block": {
+    "ips": ["10.0.0.1"],
+    "users": ["administrator"]
+  }
+}

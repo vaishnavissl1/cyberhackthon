@@ -1,0 +1,19 @@
+{"id":"s01","timestamp":"2026-11-20T08:00:00Z","host":"srv-web01","type":"auth","outcome":"failure","user":"deploy","src_ip":"185.220.101.7"}
+{"id":"s02","timestamp":"2026-11-20T08:00:02Z","host":"srv-web01","type":"auth","outcome":"failure","user":"deploy","src_ip":"185.220.101.7"}
+{"id":"s03","timestamp":"2026-11-20T08:00:04Z","host":"srv-web01","type":"auth","outcome":"failure","user":"deploy","src_ip":"185.220.101.7"}
+{"id":"s04","timestamp":"2026-11-20T08:00:06Z","host":"srv-web01","type":"auth","outcome":"failure","user":"deploy","src_ip":"185.220.101.7"}
+{"id":"s05","timestamp":"2026-11-20T08:00:08Z","host":"srv-web01","type":"auth","outcome":"failure","user":"deploy","src_ip":"185.220.101.7"}
+{"id":"s06","timestamp":"2026-11-20T08:00:10Z","host":"srv-web01","type":"auth","outcome":"failure","user":"deploy","src_ip":"185.220.101.7"}
+{"id":"s07","timestamp":"2026-11-20T08:00:20Z","host":"srv-web01","type":"auth","outcome":"success","user":"deploy","src_ip":"185.220.101.7"}
+{"id":"s08","timestamp":"2026-11-20T08:01:00Z","host":"ws-hr02","type":"auth","outcome":"failure","user":"priya","src_ip":"10.0.4.22"}
+{"id":"s09","timestamp":"2026-11-20T08:01:05Z","host":"ws-hr02","type":"auth","outcome":"success","user":"priya","src_ip":"10.0.4.22"}
+{"id":"s10","timestamp":"2026-11-20T08:05:00Z","host":"ws-finance01","type":"process","action":"start","pid":"4100","ppid":"900","image":"C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE","cmdline":"WINWORD.EXE invoice.docm"}
+{"id":"s11","timestamp":"2026-11-20T08:05:12Z","host":"ws-finance01","type":"process","action":"start","pid":"4188","ppid":"4100","image":"C:\\Windows\\System32\\cmd.exe","cmdline":"cmd /c powershell -nop -w hidden -enc SQBFAFgA"}
+{"id":"s12","timestamp":"2026-11-20T08:05:13Z","host":"ws-finance01","type":"process","action":"start","pid":"4190","ppid":"4188","image":"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe","cmdline":"powershell -nop -w hidden -enc SQBFAFgA"}
+{"id":"s13","timestamp":"2026-11-20T08:07:00Z","host":"ws-finance01","type":"file","action":"create","path":"C:\\Windows\\Temp\\upd\\svc.exe","sha256":"5555555555555555555555555555555555555555555555555555555555555555"}
+{"id":"s14","timestamp":"2026-11-20T08:07:20Z","host":"ws-finance01","type":"process","action":"start","pid":"4300","ppid":"4190","image":"C:\\Windows\\System32\\sc.exe","cmdline":"sc create WinUpdSvc binPath= \"C:\\Windows\\Temp\\upd\\svc.exe\" start= auto"}
+{"id":"s15","timestamp":"2026-11-20T08:07:30Z","host":"ws-finance01","type":"process","action":"start","pid":"4310","ppid":"700","parent_image":"C:\\Windows\\System32\\services.exe","image":"C:\\Windows\\Temp\\upd\\svc.exe","sha256":"5555555555555555555555555555555555555555555555555555555555555555"}
+{"id":"s16","timestamp":"2026-11-20T08:08:00Z","host":"ws-finance01","type":"file","action":"modify","path":"C:\\Windows\\System32\\drivers\\etc\\hosts","sha256":"6666666666666666666666666666666666666666666666666666666666666666"}
+{"id":"s17","timestamp":"2026-11-20T08:10:00Z","host":"srv-web01","type":"file","action":"modify","path":"/etc/nginx/nginx.conf","sha256":"4444444444444444444444444444444444444444444444444444444444444444"}
+{"id":"s18","timestamp":"2026-11-20T08:11:00Z","host":"srv-web01","type":"file","action":"modify","path":"/etc/passwd","sha256":"1111111111111111111111111111111111111111111111111111111111111111"}
+{"id":"s19","timestamp":"2026-11-20T08:12:00Z","host":"ws-hr02","type":"process","action":"start","pid":"5100","ppid":"700","parent_image":"C:\\Windows\\System32\\services.exe","image":"C:\\Program Files\\Vendor\\agent.exe"}
