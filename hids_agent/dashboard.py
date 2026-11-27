@@ -114,7 +114,7 @@ def charts(run, report):
                          legend=[("true detection", TEAL), ("false alarm", ALARM)]))
         lat = sorted(report.get("latency_s", {}).items(), key=lambda kv: -kv[1])
         out.append(hbars("Detection latency per attack (seconds from first attack event to alert)",
-                         [(k, [(max(v, 0), TEAL, "latency")], f"{v:g} s") for k, v in lat], unit=" s"))
+                         [(k, [(max(v, 0), TEAL, "latency")], f"{max(v, 0):.1f} s") for k, v in lat], unit=" s"))
     trials = (run.get("sweep") or {}).get("trials", []) if isinstance(run.get("sweep"), dict) else []
     if trials:
         outcomes: dict = {}
@@ -167,7 +167,7 @@ def render(run, report):
                       f'Missed sequences {esc(", ".join(report["missed"]) or "none")} · '
                       f'False alerts {esc(", ".join(report["false_alert_ids"]) or "none")}</p>')
         match_info += table(["Labeled sequence", "Detection latency (s)"],
-                            [[key, f"{value:g}"] for key, value in report["latency_s"].items()],
+                            [[key, f"{max(value, 0):.1f}"] for key, value in report["latency_s"].items()],
                             "No matched sequences.")
         match_info += table(["Attack type", "Sequences found", "Recall"],
                             [[key, f'{row["detected"]}/{row["sequences"]}', percent(row["detected"]/row["sequences"])]

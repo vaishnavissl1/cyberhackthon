@@ -392,7 +392,7 @@ def run(args, *, overrides=None, source=None) -> dict:
         "elapsed_s": round(elapsed, 3),
         "events_per_s": round(engine.stats["events"] / elapsed) if elapsed > 0 else None,
     }
-    summary.update(source=source or f"Raw event replay · {args.input or 'stdin'}",
+    summary.update(source=source or f"Raw event replay · {args.input if args.input not in (None, '-') else 'piped input'}",
                    events=summary["events_processed"], events_per_second=summary["events_per_s"],
                    events_per_minute=dict(sorted(engine.volume.items())))
     case = {"summary": summary, "alerts": list(engine.alerts.values()), "blocks": engine.blocks,

