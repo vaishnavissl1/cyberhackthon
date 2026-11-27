@@ -8,13 +8,13 @@ select{width:100%;padding:6px}button{border:0;border-radius:5px;color:white;back
 a{color:#08695c}ul{padding-left:1.2em}li{padding:4px}#message{color:#80351d}button:disabled{opacity:.65}
 @media(max-width:670px){main{grid-template-columns:1fr;padding:0 18px}header{padding:22px 18px}}
 </style></head><body><header><p>Host telemetry</p><h1>Replay workspace</h1></header><main>
-<section><h2>Run a case</h2><form id="run"><label>Input<select id="split"><option value="dev">Development Â· raw events</option>
-<option value="holdout">Holdout Â· raw events</option><option value="raw">Import raw host events</option><option value="import">Import candidate handoff</option></select></label>
+<section><h2>Run a case</h2><form id="run"><label>Input<select id="split"><option value="dev">Development · raw events</option>
+<option value="holdout">Holdout · raw events</option><option value="raw">Import raw host events</option><option value="import">Import candidate handoff</option></select></label>
 <div id="uploads" hidden><label><span id="input-label">Input file</span><input id="handoff" type="file" accept=".json,.jsonl,.ndjson"></label>
 <label>Sequence labels (optional)<input id="labels" type="file" accept=".json"></label>
 <div id="raw-policy" hidden><label>Hash baseline (optional)<input id="baseline" type="file" accept=".json"></label><label>Allow-list (optional)<input id="allowlist" type="file" accept=".json"></label></div>
 <label id="handoff-policy">Protected IPs and users (optional)<input id="protected" type="file" accept=".json"></label></div>
-<label>Response mode<select id="mode"><option value="prevent">Prevent Â· record simulated blocks</option><option value="detect">Detect Â· alerts only</option></select></label>
+<label>Response mode<select id="mode"><option value="prevent">Prevent · record simulated blocks</option><option value="detect">Detect · alerts only</option></select></label>
 <button id="submit">Run replay</button><p role="status" id="message"></p></form></section>
 <section><h2>Completed cases</h2><ul><!-- cases --></ul></section></main>
 <script>
@@ -26,7 +26,7 @@ el('split').onchange=()=>{
   el('input-label').textContent=kind==='raw'?'Raw event JSON or JSONL':'Candidate JSONL';
 };
 el('run').onsubmit=async event=>{
-  event.preventDefault();el('submit').disabled=true;el('message').textContent='Processing replayâ€¦';
+  event.preventDefault();el('submit').disabled=true;el('message').textContent='Processing replay…';
   try{
     const request={split:el('split').value,mode:el('mode').value};
     if(['import','raw'].includes(request.split)){
