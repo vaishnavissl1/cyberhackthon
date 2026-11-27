@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as _dt
 import ipaddress
 import re
+from math import isfinite
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -210,6 +211,8 @@ def parse_ts(v: Any) -> float | None:
         return None
     if isinstance(v, (int, float)):
         x = float(v)
+        if not isfinite(x):
+            return None
         if x > 1e17:            # Windows FILETIME (100 ns since 1601)
             return x / 1e7 - 11644473600
         if x > 1e14:            # microseconds
@@ -479,6 +482,8 @@ def normalize(raw: dict, seq: int) -> Event:
             cat = "process"
         elif fields.get("path") or fields.get("hash"):
             cat = "file"
+    if cat == "process" and act_raw == "service_install" and fields.get("service_path"):
+        cat = "service"
     ev.category = cat or "other"
 
     if ev.category == "auth":

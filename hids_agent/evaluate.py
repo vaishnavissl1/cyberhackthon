@@ -1,221 +1,210 @@
-"""Precision / recall report.
+"""Score final alerts against independent, sequence-level truth."""
 
-    python -m hids_agent.evaluate --out out/dev --labels data/dev_labels.json
-    python -m hids_agent.evaluate --out out/dev --stream data/dev_stream.jsonl   # labels embedded in events
-
-Scoring is per attack sequence:
-  * a sequence is detected (TP) if at least one alert matches it;
-  * an alert is a false alarm only if it matches no labeled sequence
-    (several alerts on the same sequence are not false alarms).
-Matching prefers shared event ids; without ids it falls back to host + time overlap.
-"""
 from __future__ import annotations
 
 import argparse
-import json
-import sys
+from collections import defaultdict
 from pathlib import Path
+from statistics import mean
+from math import isfinite
 
-from .normalize import LABEL_FIELDS, flatten, normalize, parse_ts
+from .label_input import TYPE_TO_RULE, labels_from_stream
+from .normalize import parse_ts
 
-BENIGN = {"", "0", "false", "none", "benign", "normal", "no", "null"}
-TYPE_TO_RULE = {
-    "bruteforce": "bruteforce", "brute_force": "bruteforce", "brute-force": "bruteforce",
-    "password_spray": "bruteforce", "spray": "bruteforce", "credential_access": "bruteforce",
-    "temp_service": "temp_service", "service": "temp_service", "persistence": "temp_service",
-    "new_service": "temp_service",
-    "office_shell": "office_shell", "office": "office_shell", "macro": "office_shell",
-    "phishing": "office_shell",
-    "fim": "fim", "file_integrity": "fim", "tamper": "fim", "file_tamper": "fim",
-}
+from .contract import BASE, evidence_ids, object_record, read_json, stamp, text
 
 
-def _ref(x) -> str:
-    s = str(x)
-    return s if s.startswith(("id:", "line:")) else f"id:{s}"
+def labels_from_events(events):
+    """Explicit offline import of tagged events with attack_id and attack_type."""
+    groups = {}
+    for event in events:
+        if not event.get("attack_id"):
+            continue
+        key = text(event["attack_id"], "attack_id")
+        host, rule = text(event.get("host"), "host"), text(event.get("attack_type"), "attack_type")
+        moment = stamp(event.get("ts"))
+        group = groups.setdefault(key, dict(attack_id=key, host=host, type=rule,
+                                            start=moment, end=moment, event_ids=[]))
+        if (host, rule) != (group["host"], group["type"]):
+            raise ValueError(f"inconsistent host or type for attack {key}")
+        group["start"], group["end"] = min(group["start"], moment), max(group["end"], moment)
+        group["event_ids"].append(text(event.get("id"), "id"))
+    return list(groups.values())
 
 
-def load_label_file(path: str) -> list[dict]:
-    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-    if isinstance(data, dict):
-        data = data.get("sequences") or data.get("attacks") or data.get("labels") or []
-    seqs = []
-    for i, s in enumerate(data):
-        ids = s.get("event_ids") or s.get("events") or s.get("ids") or []
-        seqs.append({
-            "id": str(s.get("attack_id") or s.get("id") or f"S{i + 1}"),
-            "type": str(s.get("type") or s.get("technique") or s.get("attack_type") or "").lower(),
-            "host": (str(s["host"]).lower() if s.get("host") else None),
-            "start": parse_ts(s.get("start")), "end": parse_ts(s.get("end")),
-            "refs": {_ref(x) for x in ids},
-            "description": s.get("description", ""),
-        })
-    return seqs
+def labels_by_id(rows):
+    if isinstance(rows, dict):
+        rows = next((rows[k] for k in ("sequences", "attacks", "labels") if k in rows), None)
+    if not isinstance(rows, list):
+        raise ValueError("labels must be a sequence array or an object containing one")
+    result = {}
+    for i, row in enumerate(rows, 1):
+        object_record(row)
+        key = str(row.get("attack_id") or row.get("id") or f"S{i}")
+        if key in result:
+            raise ValueError(f"duplicate attack ID: {key}")
+        name = str(row.get("type") or row.get("attack_type") or row.get("technique") or "").lower()
+        rule = TYPE_TO_RULE.get(name, name)
+        refs = row.get("event_ids", row.get("events", row.get("ids", [])))
+        if not isinstance(refs, (list, set)) or any(type(x) not in (int, str) for x in refs):
+            raise ValueError(f"invalid event_ids for {key}")
+        start, end = parse_ts(row.get("start")), parse_ts(row.get("end", row.get("start")))
+        if start is not None and end is not None and end < start:
+            raise ValueError(f"end precedes start in {key}")
+        host = str(row.get("host") or "").strip().lower()
+        if not refs and (not host or rule not in BASE or None in (start, end)):
+            raise ValueError(f"time-only label {key} requires a host, rule, start and end")
+        result[key] = dict(attack_id=key, type=rule, host=host, start=start, end=end,
+                           event_ids=evidence_ids([str(x) for x in refs]) if refs else [],
+                           variant=row.get("variant") or name or "unspecified")
+    return result
 
 
-def labels_from_stream(path: str) -> list[dict]:
-    seqs: dict[str, dict] = {}
-    with open(path, encoding="utf-8-sig", errors="replace") as f:
-        n = 0
-        for line in f:
-            line = line.strip().rstrip(",")
-            if not line or line in ("[", "]"):
-                continue
-            n += 1
-            try:
-                raw = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(raw, dict):
-                continue
-            flat = flatten(raw)
-            lab = None
-            for k in ("attack_id", "sequence_id", "label", "attack", "is_attack", "ground_truth", "attack_type"):
-                if k in flat and str(flat[k]).strip().lower() not in BENIGN:
-                    lab = flat[k]
-                    break
-            if lab is None:
-                continue
-            sid = str(flat.get("attack_id") or flat.get("sequence_id") or lab)
-            ev = normalize(raw, n)
-            s = seqs.setdefault(sid, {"id": sid, "type": str(flat.get("attack_type") or flat.get("label") or "").lower(),
-                                      "host": ev.host, "start": ev.ts, "end": ev.ts, "refs": set(),
-                                      "description": ""})
-            s["refs"].add(ev.ref)
-            if ev.ts is not None:
-                s["start"] = ev.ts if s["start"] is None else min(s["start"], ev.ts)
-                s["end"] = ev.ts if s["end"] is None else max(s["end"], ev.ts)
-    return list(seqs.values())
+def ratio(numerator, denominator):
+    return numerator / denominator if denominator else None
 
 
-def _overlaps(alert: dict, s: dict, slack: float) -> bool:
-    if s["host"] and alert["host"] != s["host"]:
-        return False
-    if s["start"] is None:
-        return False
-    end = s["end"] if s["end"] is not None else s["start"]
-    return alert["first_seen"] <= end + slack and alert["last_seen"] >= s["start"] - slack
+def evaluate(alerts, blocks, labels, *, slack_s=60):
+    if labels is None:
+        return {"status": "UNSCORED", "reason": "No labels supplied", "precision": None, "recall": None}
+    if not isfinite(slack_s) or slack_s < 0:
+        raise ValueError("time matching slack must be finite and nonnegative")
+    truth = labels_by_id(labels)
+    # Legacy ID-only labels can be scoped when their evidence identifies a single host and rule.
+    partial = [l for l in truth.values() if not l["host"] or l["type"] not in BASE]
+    if partial:
+        scopes = defaultdict(set)
+        for a in alerts:
+            for hit in a.get("observations", [a]):
+                for ref in hit["evidence"]:
+                    scopes[ref].add((a["host"].lower(), TYPE_TO_RULE.get(a["rule"], a["rule"])))
+        for label in partial:
+            possible = {(h, r) for ref in label["event_ids"] for h,r in scopes[ref]
+                        if (not label["host"] or label["host"] == h) and
+                        (label["type"] not in BASE or label["type"] == r)}
+            if len(possible) == 1:
+                label["host"], label["type"] = possible.pop()
+    refs, windows = defaultdict(set), defaultdict(list)
+    for key, label in truth.items():
+        scope = (label["host"], label["type"])
+        if label["event_ids"]:
+            for ref in label["event_ids"]:
+                refs[(*scope, ref)].add(key)
+        else:
+            windows[scope].append(key)
+    active = {b["id"]: b for b in blocks if b["status"] == "active" and b["simulated"] is True}
+    found, matches, ambiguous, false_ids, credited = {}, {}, {}, [], set()
+    per_rule = {rule: {"alerts": 0, "matched_alerts": 0, "false_alarms": 0,
+                       "sequences": 0, "detected": 0} for rule in sorted(set(BASE).union(l["type"] or "unspecified" for l in truth.values()))}
+    for alert in alerts:
+        aid = alert["id"]
+        scope = (alert["host"].lower(), TYPE_TO_RULE.get(alert["rule"], alert["rule"]))
+        counts = per_rule[scope[1]]
+        counts["alerts"] += 1
+        observations = alert.get("observations")
+        grouped_only = observations is None
+        if observations is None:
+            observations = [{"timestamp": alert["first_seen"], "evidence": alert["evidence"],
+                             "blocks": alert.get("blocks", [])}]
+        exact, by_time = defaultdict(list), defaultdict(list)
+        conflicts = set()
+        for hit in observations:
+            ids = set()
+            for ref in hit["evidence"]:
+                ids.update(refs.get((*scope, ref), ()))
+            if len(ids) == 1:
+                exact[ids.pop()].append(hit)
+            elif ids:
+                conflicts.update(ids)
+            else:
+                possible = [key for key in windows[scope]
+                            if truth[key]["start"] - slack_s <= hit["timestamp"] <= truth[key]["end"] + slack_s]
+                if len(possible) == 1:
+                    by_time[possible[0]].append(hit)
+                elif possible:
+                    conflicts.update(possible)
+        options = exact or by_time
+        if conflicts:
+            ambiguous[aid] = sorted(conflicts)
+        if not options:
+            false_ids.append(aid)
+            counts["false_alarms"] += 1
+            continue
+        matches[aid] = {"attack_id": next(iter(options)), "attack_ids": sorted(options),
+                        "method": "evidence" if exact else "time"}
+        counts["matched_alerts"] += 1
+        for key, hits in options.items():
+            first = min(h["timestamp"] for h in hits)
+            found[key] = min(found.get(key, first), first)
+            for hit in hits:
+                for bid in hit["blocks"]:
+                    b = active.get(bid)
+                    if not b or b["host"] != alert["host"] or aid not in b["alert_ids"]:
+                        continue
+                    if grouped_only and exact and not set(b.get("evidence", ())).intersection(truth[key]["event_ids"]):
+                        continue
+                    credited.add(bid)
+    variants = {}
+    latency = {k: t - truth[k]["start"] for k, t in found.items() if truth[k]["start"] is not None}
+    for key, label in truth.items():
+        counts = per_rule[label["type"] or "unspecified"]
+        counts["sequences"] += 1
+        counts["detected"] += int(key in found)
+        v = variants.setdefault(label["variant"], {"detected": 0, "sequences": 0})
+        v["sequences"] += 1
+        v["detected"] += int(key in found)
+    for row in per_rule.values():
+        row["precision"] = ratio(row["matched_alerts"], row["alerts"])
+        row["recall"] = ratio(row["detected"], row["sequences"])
+    precision, recall = ratio(len(matches), len(alerts)), ratio(len(found), len(truth))
+    f1 = None if None in (precision, recall) else (ratio(2 * precision * recall, precision + recall) or 0.0)
+    passed = bool(truth) and len(found) == len(truth) and len(false_ids) <= 2 and bool(credited)
+    return {"status": "PASS" if passed else "FAIL", "core_target": {"pass": passed,
+            "all_sequences_detected": bool(truth) and len(found) == len(truth), "false_alarms_le_2": len(false_ids) <= 2,
+            "at_least_one_block": bool(credited)}, "precision": precision, "recall": recall, "f1": f1,
+            "alerts": len(alerts), "matched_alerts": len(matches), "detected": len(found), "sequences": len(truth),
+            "false_alarms": len(false_ids), "false_alert_ids": false_ids, "missed": sorted(truth.keys() - found.keys()),
+            "matches": matches, "ambiguous": ambiguous,
+            "duplicate_matches": sum(len(m["attack_ids"]) for m in matches.values()) - len(found),
+            "blocks_on_attacks": sorted(credited), "latency_s": latency,
+            "mean_latency_s": mean(latency.values()) if latency else None,
+            "per_rule": per_rule, "per_attack_type": variants}
 
 
-def evaluate(alerts: list[dict], blocks: list[dict], seqs: list[dict], slack: float = 60.0) -> dict:
-    alert_match: dict[str, list[str]] = {}
-    seq_hits: dict[str, list[str]] = {s["id"]: [] for s in seqs}
-    for a in alerts:
-        ev = set(a["evidence"])
-        m = [s["id"] for s in seqs if s["refs"] and ev & s["refs"]]
-        if not m:
-            m = [s["id"] for s in seqs if not s["refs"] and _overlaps(a, s, slack)]
-        alert_match[a["id"]] = m
-        for sid in m:
-            seq_hits[sid].append(a["id"])
-    by_id = {a["id"]: a for a in alerts}
-    tp_alerts = [aid for aid, m in alert_match.items() if m]
-    fp_alerts = [aid for aid, m in alert_match.items() if not m]
-    detected = [sid for sid, h in seq_hits.items() if h]
-    missed = [sid for sid, h in seq_hits.items() if not h]
-    n_alerts = len(alerts)
-    precision = len(tp_alerts) / n_alerts if n_alerts else (1.0 if not seqs else 0.0)
-    recall = len(detected) / len(seqs) if seqs else 1.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-
-    seq_by_id = {s["id"]: s for s in seqs}
-    latency = {}
-    for sid, h in seq_hits.items():
-        s = seq_by_id[sid]
-        if h and s["start"] is not None:
-            latency[sid] = round(min(by_id[a]["first_seen"] for a in h) - s["start"], 3)
-
-    per_rule: dict[str, dict] = {}
-    for a in alerts:
-        r = per_rule.setdefault(a["rule"], {"alerts": 0, "tp_alerts": 0, "fp_alerts": 0})
-        r["alerts"] += 1
-        r["tp_alerts" if alert_match[a["id"]] else "fp_alerts"] += 1
-    per_type: dict[str, dict] = {}
-    for s in seqs:
-        t = TYPE_TO_RULE.get(s["type"], s["type"] or "unknown")
-        r = per_type.setdefault(t, {"sequences": 0, "detected": 0})
-        r["sequences"] += 1
-        r["detected"] += 1 if seq_hits[s["id"]] else 0
-    for r in per_type.values():
-        r["recall"] = round(r["detected"] / r["sequences"], 4) if r["sequences"] else None
-
-    tp_set = set(tp_alerts)
-    active = [b for b in blocks if b.get("status") == "active"]
-    blocks_on_attacks = [b["id"] for b in active
-                         if set(b.get("alert_ids", [])) & tp_set
-                         or any(set(b.get("evidence", [])) & s["refs"] for s in seqs)]
-    fp_detail = [{"id": aid, "rule": by_id[aid]["rule"], "host": by_id[aid]["host"],
-                  "title": by_id[aid]["title"], "score": by_id[aid]["score"]} for aid in fp_alerts]
-    miss_detail = [{"id": sid, "type": seq_by_id[sid]["type"], "host": seq_by_id[sid]["host"],
-                    "description": seq_by_id[sid].get("description", "")} for sid in missed]
-    core = {
-        "all_sequences_detected": not missed,
-        "false_alarms_le_2": len(fp_alerts) <= 2,
-        "at_least_one_block": len(blocks_on_attacks) >= 1,
-    }
-    core["pass"] = all(core.values())
-    return {
-        "sequences": len(seqs), "detected": len(detected), "missed": len(missed),
-        "alerts": n_alerts, "true_positive_alerts": len(tp_alerts), "false_alarms": len(fp_alerts),
-        "precision": round(precision, 4), "recall": round(recall, 4), "f1": round(f1, 4),
-        "mean_latency_s": round(sum(latency.values()) / len(latency), 3) if latency else None,
-        "latency_s": latency, "per_rule": per_rule, "per_attack_type": per_type,
-        "blocks_total": len(blocks), "blocks_active": len(active),
-        "blocks_on_attacks": len(blocks_on_attacks),
-        "false_alarm_detail": fp_detail, "missed_detail": miss_detail,
-        "alert_to_sequences": alert_match, "core_target": core,
-    }
+def score_run(run, labels, slack_s=60):
+    summary = run["summary"]
+    if summary.get("input_error") or summary.get("processing_errors") or summary.get("interrupted"):
+        return {"status": "INCOMPLETE", "reason": "Replay interrupted or input/detection failed; see summary.json",
+                "precision": None, "recall": None}
+    return evaluate(run["alerts"], run["blocks"], labels, slack_s=slack_s)
 
 
-def to_markdown(r: dict, title: str) -> str:
-    c = r["core_target"]
-    yes = lambda b: "PASS" if b else "FAIL"
-    lines = [f"# Detection report: {title}", "",
-             f"**Core target: {yes(c['pass'])}**", "",
-             "| Check | Result |", "|---|---|",
-             f"| All attack sequences detected | {yes(c['all_sequences_detected'])} ({r['detected']}/{r['sequences']}) |",
-             f"| At most 2 false alarms | {yes(c['false_alarms_le_2'])} ({r['false_alarms']}) |",
-             f"| At least one block on an attack | {yes(c['at_least_one_block'])} ({r['blocks_on_attacks']}) |",
-             "", "| Metric | Value |", "|---|---|",
-             f"| Precision (alert level) | {r['precision']:.3f} |",
-             f"| Recall (sequence level) | {r['recall']:.3f} |",
-             f"| F1 | {r['f1']:.3f} |",
-             f"| Alerts | {r['alerts']} |",
-             f"| Mean detection latency | {r['mean_latency_s']} s |",
-             "", "## Recall per attack type", "", "| Type | Detected | Recall |", "|---|---|---|"]
-    for t, v in r["per_attack_type"].items():
-        lines.append(f"| {t} | {v['detected']}/{v['sequences']} | {v['recall']} |")
-    lines += ["", "## Alerts per rule", "", "| Rule | Alerts | True | False |", "|---|---|---|---|"]
-    for t, v in r["per_rule"].items():
-        lines.append(f"| {t} | {v['alerts']} | {v['tp_alerts']} | {v['fp_alerts']} |")
-    if r["false_alarm_detail"]:
-        lines += ["", "## False alarms", ""] + [f"- {x['id']} ({x['rule']}, {x['host']}): {x['title']}"
-                                                 for x in r["false_alarm_detail"]]
-    if r["missed_detail"]:
-        lines += ["", "## Missed sequences", ""] + [f"- {x['id']} ({x['type']}, {x['host']}) {x['description']}"
-                                                     for x in r["missed_detail"]]
-    return "\n".join(lines) + "\n"
-
-
-def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--out", required=True, help="agent output directory (alerts.json, blocklist.jsonl)")
-    p.add_argument("--labels", help="labels JSON (sequence list)")
-    p.add_argument("--stream", help="stream with labels embedded in events")
-    p.add_argument("--slack", type=float, default=60.0, help="time-overlap slack when labels have no ids")
-    a = p.parse_args(argv)
-    if not a.labels and not a.stream:
-        p.error("need --labels or --stream")
-    out = Path(a.out)
-    alerts = json.loads((out / "alerts.json").read_text(encoding="utf-8"))
-    blocks = [json.loads(l) for l in (out / "blocklist.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
-    seqs = load_label_file(a.labels) if a.labels else labels_from_stream(a.stream)
-    r = evaluate(alerts, blocks, seqs, a.slack)
-    (out / "report.json").write_text(json.dumps(r, indent=2), encoding="utf-8")
-    md = to_markdown(r, out.name)
-    (out / "report.md").write_text(md, encoding="utf-8")
-    sys.stdout.write(md)
-    return 0 if r["core_target"]["pass"] else 1
+def main(argv=None):
+    from .outputs import load_run, publish_report
+    from .contract import lines
+    cli = argparse.ArgumentParser(description=__doc__)
+    cli.add_argument("--out", type=Path, required=True, help="existing run folder")
+    group = cli.add_mutually_exclusive_group(required=True)
+    group.add_argument("--labels", type=Path)
+    group.add_argument("--embedded-labels", type=Path, help="tagged raw events as JSONL")
+    group.add_argument("--stream", type=Path, help="organizer stream with embedded labels")
+    cli.add_argument("--slack", type=float, default=60)
+    args = cli.parse_args(argv)
+    try:
+        if args.labels:
+            labels = read_json(args.labels)
+        elif args.stream:
+            labels = labels_from_stream(args.stream) or None
+        else:
+            with args.embedded_labels.open(encoding="utf-8-sig") as stream:
+                labels = labels_from_events(row for _, row in lines(stream)) or None
+        run = load_run(args.out)
+        report = score_run(run, labels, args.slack)
+        publish_report(args.out, run, report)
+        print(f"{report['status']}  {args.out / 'report.md'}")
+        return int(report["status"] in {"FAIL", "INCOMPLETE"})
+    except (OSError, ValueError, KeyError) as exc:
+        cli.exit(2, f"error: {exc}\n")
 
 
 if __name__ == "__main__":

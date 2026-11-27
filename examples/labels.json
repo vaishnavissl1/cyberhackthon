@@ -1,0 +1,10 @@
+[
+  {
+    "attack_id": "office-sequence-1",
+    "type": "office_shell",
+    "host": "desk-01",
+    "start": "2026-11-27T08:00:00Z",
+    "end": "2026-11-27T08:00:02Z",
+    "event_ids": ["office-start", "shell-start"]
+  }
+]

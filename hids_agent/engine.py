@@ -3,6 +3,7 @@ correlates incidents and applies the (simulated) prevention response."""
 from __future__ import annotations
 
 import itertools
+from collections import Counter
 from typing import Callable
 
 from .allowlist import AllowList
@@ -90,6 +91,7 @@ class Engine:
         self.blocks: list[dict] = []
         self.block_keys: dict[tuple, dict] = {}
         self.active_ip_blocks: dict[str, float] = {}
+        self.volume = Counter()
         self.watch: list[dict] = []
         self.audit: list[dict] = []
         self.ids = itertools.count(1)
@@ -108,7 +110,9 @@ class Engine:
         if ev.ts is None:
             ev.ts = self.last_ts
         self.last_ts = max(self.last_ts, ev.ts)
-        if ev.src_ip and ev.src_ip in self.active_ip_blocks and ev.ts >= self.active_ip_blocks[ev.src_ip]:
+        self.volume[int(ev.ts // 60)] += 1
+        since = self.active_ip_blocks.get((ev.host, ev.src_ip))
+        if since is not None and since <= ev.ts < since + self.ttl:
             self.stats["dropped_after_block"] += 1
         if ev.category == "process" and ev.action == "start":
             # rules read ancestry first, then the event joins the table
@@ -129,15 +133,16 @@ class Engine:
     # --------------------------------------------------------------- handlers
     def _handle(self, item, ev: Event) -> None:
         if isinstance(item, Candidate):
-            self._alert(item)
+            self.accept(item)
         elif isinstance(item, Watch):
             rec = {"type": "watch", "rule": item.rule, "host": item.host, "ts": item.ts,
-                   "note": item.note, "evidence": item.evidence, **item.context}
+                   "note": item.note, "reason": item.note, "evidence": item.evidence, **item.context}
             self.watch.append(rec)
             self.sink("watch", rec)
         elif isinstance(item, Suppressed):
             rec = {"type": "suppressed", "rule": item.rule, "host": item.host, "ts": item.ts,
                    "reason": item.reason, "allowlist_entry": item.allow_entry,
+                   "entry": item.allow_entry.get("ticket") or item.allow_entry,
                    "evidence": item.evidence, **item.context}
             self.audit.append(rec)
             self.sink("audit", rec)
@@ -161,12 +166,14 @@ class Engine:
         return int(score), [{"signal": "base:" + c.rule, "points": base}] + \
             [{"signal": s, "points": p} for s, p in sig]
 
-    def _alert(self, c: Candidate) -> None:
+    def accept(self, c: Candidate) -> None:
+        """Score a confirmed candidate and publish its simulated response."""
         key = (c.rule, c.host, c.entity)
         aid = self.open.get(key)
         if aid is not None:
             a = self.alerts[aid]
-            if c.ts - a["last_seen"] <= self.cooldown:
+            if a["first_seen"] - self.cooldown <= c.ts <= a["last_seen"] + self.cooldown:
+                a["first_seen"] = min(a["first_seen"], c.ts)
                 a["last_seen"] = max(a["last_seen"], c.ts)
                 seen = self.evidence[aid]
                 for ref in c.evidence:
@@ -176,7 +183,7 @@ class Engine:
                 a["hits"] += 1
                 score, sigs = self._score(c)
                 if score > a["score"]:
-                    a["score"], a["signals"], a["severity"] = score, sigs, sev_from_score(score)
+                    a["score"], a["signals"], a["severity"], a["context"] = score, sigs, sev_from_score(score), c.context
                 self._respond(a, c)
                 self.sink("alert_update", {"id": aid, "last_seen": a["last_seen"], "hits": a["hits"],
                                            "score": a["score"], "severity": a["severity"],
@@ -186,7 +193,8 @@ class Engine:
         sev = sev_from_score(score)
         if SEV_ORDER.index(sev) < self.min_sev:
             rec = {"type": "watch", "rule": c.rule, "host": c.host, "ts": c.ts,
-                   "note": "below alert threshold: " + c.title, "evidence": c.evidence, "score": score}
+                   "note": "below alert threshold: " + c.title, "reason": "below alert threshold: " + c.title,
+                   "evidence": c.evidence, "score": score}
             self.watch.append(rec)
             self.sink("watch", rec)
             return
@@ -195,7 +203,7 @@ class Engine:
              "first_seen": c.ts, "last_seen": c.ts, "score": score, "severity": sev,
              "signals": sigs, "mitre": c.mitre, "evidence": sorted(set(c.evidence)),
              "hits": 1, "user": c.user, "src_ip": c.src_ip, "context": c.context,
-             "blocks": [], "would_block": []}
+             "blocks": [], "would_block": [], "requested_blocks": [], "observations": []}
         self.alerts[aid] = a
         self.evidence[aid] = set(a["evidence"])
         self.open[key] = aid
@@ -206,26 +214,42 @@ class Engine:
 
     def _respond(self, a: dict, c: Candidate) -> None:
         """Apply the block policy; also runs for merged hits, which can name new targets."""
+        observation = {"timestamp": c.ts, "evidence": c.evidence, "blocks": []}
+        a["observations"].append(observation)
         for action, target in c.blocks:
             if not target:
                 continue
+            request = {"action": action, "target": target}
+            if request not in a["requested_blocks"]:
+                a["requested_blocks"].append(request)
             if self.prevent and c.rule in self.block_rules:
-                b = self._block(action, target, c.title, a["id"], a["severity"], c.ts, c.host, c.evidence)
+                # A launch often carries a binary but no service name. Correlate it
+                # with installation evidence for that same binary.
+                service_binary = c.context.get("binary") if action == "disable_service" else None
+                b = self._block(action, target, c.title, a["id"], a["severity"], c.ts, c.host, c.evidence,
+                                service_binary=service_binary)
                 if b["id"] not in a["blocks"]:
                     a["blocks"].append(b["id"])
+                if b["id"] not in observation["blocks"]:
+                    observation["blocks"].append(b["id"])
             elif {"action": action, "target": target} not in a["would_block"]:
                 a["would_block"].append({"action": action, "target": target})
 
     def _block(self, action: str, target: str, reason: str, aid: str | None, sev: str,
-               ts: float, host: str, evidence: list) -> dict | None:
-        key = (action, target)
-        if key in self.block_keys:
+               ts: float, host: str, evidence: list, *, service_binary=None) -> dict:
+        key = (host, action, service_binary or target)
+        if key in self.block_keys and 0 <= ts - self.block_keys[key]["ts"] < self.ttl:
             b = self.block_keys[key]
             if aid and aid not in b["alert_ids"]:
                 b["alert_ids"].append(aid)
+            if service_binary and b["target"] == service_binary and target != service_binary:
+                b["target"] = target
+            for ref in evidence:
+                if len(b["evidence"]) < MAX_EVIDENCE and ref not in b["evidence"]:
+                    b["evidence"].append(ref)
             return b
         kind = {"block_ip": "ip", "lock_account": "user", "restore_file": "path",
-                "quarantine_file": "path"}.get(action)
+                "quarantine_file": "path", "deny_file_change": "path"}.get(action)
         protected = bool(kind and self.allow.protected(kind, target))
         b = {"id": f"B{next(self.bids):04d}", "ts": ts, "host": host, "action": action,
              "target": target, "reason": reason, "alert_ids": [aid] if aid else [],
@@ -234,7 +258,7 @@ class Engine:
         self.block_keys[key] = b
         self.blocks.append(b)
         if action == "block_ip" and not protected:
-            self.active_ip_blocks[target] = ts
+            self.active_ip_blocks[host, target] = ts
         self.sink("block", b)
         return b
 
@@ -259,7 +283,9 @@ class Engine:
     @staticmethod
     def _inc(n: int, host: str, al: list) -> dict:
         top = max(al, key=lambda x: x["score"])
-        return {"id": f"I{n:03d}", "host": host, "alerts": [a["id"] for a in al],
+        ids = [a["id"] for a in al]
+        return {"id": f"I{n:03d}", "host": host, "alerts": ids, "alert_ids": ids,
+                "first_seen": al[0]["first_seen"], "last_seen": max(a["last_seen"] for a in al),
                 "rules": sorted({a["rule"] for a in al}), "start": al[0]["first_seen"],
                 "end": max(a["last_seen"] for a in al), "max_score": top["score"],
                 "severity": top["severity"], "multi_stage": len({a["rule"] for a in al}) > 1}

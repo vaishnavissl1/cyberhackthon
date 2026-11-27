@@ -1,0 +1,5 @@
+{"kind":"source","name":"Office handoff example with scripted predictions"}
+{"kind":"event","timestamp":"2026-11-27T08:00:00Z"}
+{"kind":"event","timestamp":"2026-11-27T08:00:01Z"}
+{"kind":"event","timestamp":"2026-11-27T08:00:02Z"}
+{"rule":"office_shell","host":"desk-01","entity":"word:142","timestamp":"2026-11-27T08:00:02Z","title":"Word started a command shell","mitre":["T1059"],"evidence":["id:office-start","id:shell-start"],"signals":[],"context":{"process_tree":["winword.exe","cmd.exe"]},"requested_blocks":[{"action":"terminate_process","target":"pid:143"}]}

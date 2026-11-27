@@ -18,7 +18,7 @@ DEFAULTS: dict[str, Any] = {
         "n_fail": 5, "window_s": 300, "success_within_s": 600,
         "spray_users": 5, "dist_sources": 3,
         "skip_machine_accounts": True,
-        "preempt_block_factor": 2,         # prevent mode: block IP at n_fail*factor failures (no alert)
+        "preempt_block_factor": 0,         # optional failure-only block at n_fail*factor
     },
     "temp_service": {
         "temp_roots": [

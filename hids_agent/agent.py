@@ -25,6 +25,9 @@ from .allowlist import load_allowlist
 from .config import load_config, load_structured
 from .engine import Engine, load_baseline
 from .normalize import normalize
+from .evaluate import score_run
+from .outputs import publish_report
+from .contract import write_lines
 
 EOF = object()
 
@@ -304,10 +307,15 @@ class Pipeline:
             self._emit(heapq.heappop(self.heap)[2])
 
 
-def run(args) -> dict:
-    cfg = load_config(args.config, {"mode": args.mode} if args.mode else None)
+def run(args, *, overrides=None, source=None) -> dict:
+    settings = dict(overrides or {})
+    if args.mode:
+        settings["mode"] = args.mode
+    cfg = load_config(args.config, settings)
     allow = load_allowlist(load_structured(args.allowlist) if args.allowlist else None)
     baseline = load_baseline(load_structured(args.baseline) if args.baseline else None)
+    labels = load_structured(args.labels) if getattr(args, "labels", None) else None
+    sweep = load_structured(args.sweep) if getattr(args, "sweep", None) else None
     if args.learn_baseline:
         cfg["fim"]["learn_baseline"] = True
     out = Path(args.out) if args.out else None
@@ -328,6 +336,7 @@ def run(args) -> dict:
         reader = (stream_reader, sys.stdin, q, counter)
     threading.Thread(target=_guarded, args=(reader[0], q, *reader[1:]), daemon=True).start()
     fatal = None
+    interrupted = False
 
     t0 = time.perf_counter()
     idle = float(cfg["idle_flush_s"])
@@ -346,6 +355,7 @@ def run(args) -> dict:
                 break
             pipe.push(*item)
     except KeyboardInterrupt:
+        interrupted = True
         print("[agent] interrupted, flushing", file=sys.stderr)
     pipe.flush()
     elapsed = time.perf_counter() - t0
@@ -355,7 +365,7 @@ def run(args) -> dict:
         "events_read": pipe.stats["read"], "events_processed": engine.stats["events"],
         "malformed": pipe.stats["malformed"], "duplicates_dropped": pipe.stats["duplicates"],
         "late_events": pipe.stats["late"], "processing_errors": pipe.stats["errors"],
-        "input_error": fatal, "ts_missing": engine.stats["ts_missing"],
+        "input_error": fatal, "interrupted": interrupted, "ts_missing": engine.stats["ts_missing"],
         "by_category": engine.stats["by_category"],
         "alerts": len(engine.alerts), "blocks": len(engine.blocks),
         "active_blocks": sum(1 for b in engine.blocks if b["status"] == "active"),
@@ -364,16 +374,28 @@ def run(args) -> dict:
         "elapsed_s": round(elapsed, 3),
         "events_per_s": round(engine.stats["events"] / elapsed) if elapsed > 0 else None,
     }
+    summary.update(source=source or f"Raw event replay · {args.input or 'stdin'}",
+                   events=summary["events_processed"], events_per_second=summary["events_per_s"],
+                   events_per_minute=dict(sorted(engine.volume.items())))
+    case = {"summary": summary, "alerts": list(engine.alerts.values()), "blocks": engine.blocks,
+            "incidents": engine.incidents(), "audit": engine.audit, "watch": engine.watch}
+    if sweep is not None:
+        case["sweep"] = sweep
+    report = score_run(case, labels)
+    outputs.close()
     if out:
-        (out / "alerts.json").write_text(json.dumps(list(engine.alerts.values()), indent=2, default=str), encoding="utf-8")
-        (out / "incidents.json").write_text(json.dumps(engine.incidents(), indent=2), encoding="utf-8")
+        # Replace the live decision journal with final reverse links and merged evidence.
+        write_lines(out / "blocklist.jsonl", case["blocks"])
+        (out / "alerts.json").write_text(json.dumps(case["alerts"], indent=2, default=str), encoding="utf-8")
+        (out / "incidents.json").write_text(json.dumps(case["incidents"], indent=2), encoding="utf-8")
         (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         (out / "config_used.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    outputs.close()
+        if sweep is not None:
+            (out / "sweep.json").write_text(json.dumps(sweep, indent=2), encoding="utf-8")
+        publish_report(out, case, report)
     if not args.quiet:
         print(json.dumps(summary, indent=2), file=sys.stderr)
-    return {"summary": summary, "alerts": list(engine.alerts.values()), "blocks": engine.blocks,
-            "engine": engine}
+    return {**case, "engine": engine, "report": report}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -388,6 +410,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--baseline", help="hash baseline JSON")
     p.add_argument("--learn-baseline", action="store_true", help="first-seen hash becomes baseline")
     p.add_argument("--allowlist", help="allow-list JSON/YAML")
+    p.add_argument("--labels", help="sequence labels for offline evaluation after detection")
+    p.add_argument("--sweep", help="optional tuning sweep JSON for the dashboard")
     p.add_argument("--out", "-o", default="out", help="output directory")
     p.add_argument("--quiet", "-q", action="store_true")
     return p
@@ -395,7 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     result = run(build_parser().parse_args(argv))
-    return 2 if result["summary"]["input_error"] else 0
+    return 2 if result["report"]["status"] == "INCOMPLETE" else 0
 
 
 if __name__ == "__main__":

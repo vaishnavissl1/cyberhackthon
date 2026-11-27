@@ -135,7 +135,7 @@ class BruteForce:
         user = ev.user
         if user and self.skip_machine and user.endswith("$"):
             return []
-        allowed = self.allow.auth_match(ev.src_ip, user, ev.ts)
+        allowed = self.allow.auth_match(ev.src_ip, user, ev.ts, ev.host)
         ts, host, ip = ev.ts, ev.host, ev.src_ip or "unknown-src"
         out: list = []
         if ev.outcome == "failure":
@@ -322,9 +322,9 @@ class TempService:
         return v.strip().strip('"').strip("'").replace('\\"', '"')
 
     def _cand(self, ev: Event, binary: str, name: str | None, how: str, level: str) -> list:
-        if self.allow.service_match(name, binary, ev.ts):
+        if self.allow.service_match(name, binary, ev.ts, ev.host):
             return [Suppressed(self.name, ev.host, ev.ts, f"approved service {name or binary}",
-                               self.allow.service_match(name, binary, ev.ts), [ev.ref],
+                               self.allow.service_match(name, binary, ev.ts, ev.host), [ev.ref],
                                {"binary": binary, "service": name})]
         sig = [(f"signal:{how}", 0)]
         if level == "medium":
@@ -449,9 +449,9 @@ class OfficeShell:
             return []
         depth, anc = office
         direct_parent = chain[0]["base"] if chain else None
-        allow = self.allow.process_match(anc["base"], child, ev.cmdline, ev.ts)
+        allow = self.allow.process_match(anc["base"], child, ev.cmdline, ev.ts, ev.host)
         if allow is None and depth > 0:
-            allow = self.allow.process_match(direct_parent, child, ev.cmdline, ev.ts)
+            allow = self.allow.process_match(direct_parent, child, ev.cmdline, ev.ts, ev.host)
         if allow:
             return [Suppressed(self.name, ev.host, ev.ts, f"approved {anc['base']} -> {child}", allow,
                                [ev.ref], {"cmdline": ev.cmdline})]
@@ -548,10 +548,9 @@ class FIM:
         if common:
             if all(new[a] == known[a] for a in common):
                 return []      # identical content (touch / same-hash rewrite)
-            a = common[0]
+            a = next(a for a in common if new[a] != known[a])
             new_h = new[a]
-            allow = self.allow.fim_match(p, new_h, ev.ts) or next(
-                (self.allow.fim_match(p, h, ev.ts) for h in new.values() if self.allow.fim_match(p, h, ev.ts)), None)
+            allow = self.allow.fim_match(p, new_h, ev.ts, ev.host)
             if allow:
                 store(p, new)   # approved: the new content becomes the baseline
                 return [Suppressed(self.name, ev.host, ev.ts, "approved change", allow, [ev.ref],
@@ -560,15 +559,17 @@ class FIM:
                                {"algo": a, "expected": known[a], "observed": new_h})]
         allow = None
         for h in new.values():
-            allow = self.allow.fim_match(p, h, ev.ts)
+            allow = self.allow.fim_match(p, h, ev.ts, ev.host)
             if allow:
                 break
         if allow is None and not new:
-            allow = self.allow.fim_match(p, None, ev.ts)
+            allow = self.allow.fim_match(p, None, ev.ts, ev.host)
         if allow:
             if new:
                 store(p, new)
             return [Suppressed(self.name, ev.host, ev.ts, "approved change", allow, [ev.ref], {"path": p})]
         why = "no hash in event" if not new else f"hash algorithm {list(new)} not in baseline {list(known)}"
-        return [self._cand(ev, p, "changed (unverified)", [("unverified: " + why, -10)],
-                           {"expected": known, "observed": new or None})]
+        candidate = self._cand(ev, p, "changed (unverified)", [("unverified: " + why, -10)],
+                               {"expected": known, "observed": new or None})
+        candidate.blocks = []
+        return [candidate]

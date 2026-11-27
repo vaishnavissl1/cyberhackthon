@@ -1,0 +1,3 @@
+{"id":"office-start","ts":"2026-11-27T08:00:00Z","host":"desk-01","category":"process","action":"start","image":"winword.exe","pid":142,"parent_image":"explorer.exe"}
+{"id":"browser-start","ts":"2026-11-27T08:00:01Z","host":"desk-01","category":"process","action":"start","image":"browser.exe","pid":177,"ppid":142,"parent_image":"winword.exe"}
+{"id":"shell-start","ts":"2026-11-27T08:00:02Z","host":"desk-01","category":"process","action":"start","image":"cmd.exe","pid":143,"ppid":142,"parent_image":"winword.exe"}

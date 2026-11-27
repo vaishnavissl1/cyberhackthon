@@ -65,13 +65,16 @@ class AllowList:
                 print(f"[allowlist] WARNING process entry without cmdline_regex: {e['raw']}", file=sys.stderr)
 
     @staticmethod
-    def _live(e: dict, ts: float | None) -> bool:
+    def _live(e: dict, ts: float | None, host: str | None) -> bool:
+        scope = e["raw"].get("host")
+        if scope and str(scope).lower() != host:
+            return False
         return e["expires"] is None or ts is None or ts <= e["expires"]
 
     # -- matching ------------------------------------------------------------
-    def fim_match(self, path: str, new_hash: str | None, ts: float | None) -> dict | None:
+    def fim_match(self, path: str, new_hash: str | None, ts: float | None, host: str | None = None) -> dict | None:
         for e in self.fim:
-            if not self._live(e, ts) or not _glob(e["path"], path):
+            if not self._live(e, ts, host) or not _glob(e["path"], path):
                 continue
             if e["hash"] is not None:
                 if new_hash and new_hash == e["hash"]:
@@ -80,9 +83,9 @@ class AllowList:
                 return e["raw"]
         return None
 
-    def service_match(self, name: str | None, path: str | None, ts: float | None) -> dict | None:
+    def service_match(self, name: str | None, path: str | None, ts: float | None, host: str | None = None) -> dict | None:
         for e in self.services:
-            if not self._live(e, ts):
+            if not self._live(e, ts, host):
                 continue
             if (e["name"] is None or e["name"] == name) and _glob(e["path"], path):
                 if e["name"] is None and e["path"] is None:
@@ -91,9 +94,9 @@ class AllowList:
         return None
 
     def process_match(self, parent: str | None, child: str | None, cmd: str | None,
-                      ts: float | None) -> dict | None:
+                      ts: float | None, host: str | None = None) -> dict | None:
         for e in self.process:
-            if not self._live(e, ts):
+            if not self._live(e, ts, host):
                 continue
             if e["parent"] and e["parent"] != parent:
                 continue
@@ -104,9 +107,9 @@ class AllowList:
             return e["raw"]
         return None
 
-    def auth_match(self, ip: str | None, user: str | None, ts: float | None) -> dict | None:
+    def auth_match(self, ip: str | None, user: str | None, ts: float | None, host: str | None = None) -> dict | None:
         for e in self.auth:
-            if not self._live(e, ts):
+            if not self._live(e, ts, host):
                 continue
             if e["net"] is not None:
                 try:
@@ -131,9 +134,9 @@ class AllowList:
             except ValueError:
                 return False
         if kind == "user":
-            return target in self.never_block_users
+            return norm_user(target)[0] in self.never_block_users
         if kind == "path":
-            return target in self.never_block_paths
+            return norm_path(target) in self.never_block_paths
         return False
 
 

@@ -1,86 +1,76 @@
 # HIDS/HIPS Event-Replay Agent
 
-A lightweight host agent that reads a replayed JSON event stream, detects attacks and decides what
-to block. It never runs anything: a block is a record in `blocklist.jsonl`.
+A standard-library Python agent for replayed host telemetry. It detects brute force followed by a success, services running from temporary directories, Office spawning a shell, and file changes against a hash baseline. It records simulated prevention decisions and generates an HTML case dashboard. The replay never executes commands or changes the host.
 
-The full design and the two-person work split are in
-[HIDS_HIPS_Implementation_Plan.docx](HIDS_HIPS_Implementation_Plan.docx).
+See the [implementation plan](HIDS_HIPS_Implementation_Plan.docx) for the original scope and work split.
 
-## Status
+## Run a case
 
-| Part | Contents | Status |
-|---|---|---|
-| A: detection | input adapters, normalizer, reorder/dedup buffer, process table, four rules, allow-list | Done, covered by tests |
-| B: scoring and response | `engine.py` (scoring, alert grouping, incidents, blocks) | Written; exercised through the Part A tests, no dedicated scoring or incident tests |
-| B: measurement | `evaluate.py` | Drafted, **never run or tested** |
-| B: remaining | `gen_synthetic.py`, `tune.py`, dashboard | Not started |
+Use Python 3.11 or newer from the repository root.
 
-All testing so far uses hand-made events. Nothing has been run against the organizers' stream.
+~~~powershell
+python -m hids_agent demo --out runs/demo
+python -m hids_agent demo --split holdout --out runs/holdout
+~~~
 
-## Run
+These commands run the detector on generated raw events with independent labels. Open `dashboard.html` in the run directory. A synthetic PASS describes that fixture. The organizer development and hidden streams still need separate evaluation.
 
-Python 3.11 or newer, no packages required (PyYAML only if you want YAML config files).
+For organizer input or the sample stream, use the same agent entry point:
 
-```bash
-# from the replay script (prevention mode is the default)
-python provided_replay.py | python -m hids_agent.agent --out out/run1
+~~~powershell
+python provided_replay.py | python -m hids_agent.agent --labels data/dev_labels.json --out runs/organizer
+python -m hids_agent.agent --input data/sample_stream.jsonl --baseline data/baseline.example.json --allowlist data/allowlist.example.json --out runs/sample
+~~~
 
-# the bundled sample
-python -m hids_agent.agent --input data/sample_stream.jsonl \
-    --baseline data/baseline.example.json --allowlist data/allowlist.example.json --out out/sample
+Omit `--labels` when ground truth is unavailable. Pass `--mode detect` to keep requested decisions on the alert and leave the block journal empty. For an organizer run, supply its baseline and allow-list if available. Inspect `summary.json` for unrecognized events and processing errors, then use `errors.log` to investigate failures. Record how service creation appears in the raw stream. If permitted, label sequences from the raw stream independently before evaluating.
 
-# tests
+## Generate, tune, and evaluate
+
+~~~powershell
+python -m hids_agent.gen_synthetic --split dev --mixed --out runs/dev-input
+python -m hids_agent.gen_synthetic --split holdout --mixed --out runs/holdout-input
+python -m hids_agent.tune --events runs/dev-input/events-mixed.jsonl --labels runs/dev-input/labels.json --baseline runs/dev-input/baseline.json --allowlist runs/dev-input/allowlist.json --failures 5 6 --windows 30 300 --success-delays 60 600 --spray-users 5 6 --cooldowns 900 --min-severities medium high --config-out runs/frozen.json --report-out runs/sweep.json
+python -m hids_agent.agent --input runs/holdout-input/events-mixed.jsonl --baseline runs/holdout-input/baseline.json --allowlist runs/holdout-input/allowlist.json --labels runs/holdout-input/labels.json --config runs/frozen.json --sweep runs/sweep.json --out runs/frozen-holdout
+python -m hids_agent.evaluate --out runs/frozen-holdout --labels runs/holdout-input/labels.json
+~~~
+
+The generator writes an ordered raw stream, labels, baseline and allow-list. Its optional mixed stream adds alternate field styles, a duplicate, a malformed line and, in holdout, out-of-order records. Tune on development only. A raw tuning sweep keeps full-recall trials, ranks by fewer false alarms and breaks ties using lower count and severity thresholds, longer correlation windows and a shorter grouping cooldown. With no full-recall setting the tuner exits with status 1 and writes no selected config.
+
+Labels include `attack_id`, `type`, `host`, `start`, `end` and optional `event_ids`. `--stream` evaluates a saved run against embedded sequence annotations read with the same framing as detection. The detector drops label fields before running any rule. A scoped shared reference takes precedence. Time-only labels require a host, recognized rule and interval. Independent observations within one alert may match different sequences. Ambiguous observations are flagged. Recall counts distinct matched sequences. Precision counts matched alerts. With an undefined denominator, the metric is unavailable.
+
+The labeled target is PASS when all sequences are found, there are at most two false alarms, and at least one active simulated decision is linked to a matching observation. `hids_agent.evaluate` exits 0 on PASS, 1 on FAIL or INCOMPLETE, and 2 on an input or usage error. Runs without labels show UNSCORED.
+
+The `run` subcommand can also import a candidate JSONL handoff. The files in `examples/` give a three-event Office case, its candidate example and an independent label. Both entry points use the same scoring and response engine.
+
+## Dashboard and journals
+
+~~~powershell
+python -m dashboard.server --root runs
+~~~
+
+Open [the local dashboard](http://127.0.0.1:8765/). Select development, holdout, or upload raw JSON/JSONL with optional labels, baseline and allow-list. The runner binds to loopback. Standalone `dashboard.html` files also open offline.
+
+| Output | Contents |
+| --- | --- |
+| `alerts.jsonl`, `alerts.json` | Live alerts and updates, then final grouped alerts with score, severity and observation evidence |
+| `blocklist.jsonl` | Simulated actions with final reverse links, protected status and time-to-live |
+| `audit.jsonl`, `watch.jsonl` | Approved changes and observations that fall short of a confirmed alert |
+| `incidents.json`, `summary.json` | Host incidents, event volume, input quality and throughput |
+| `report.json`, `report.md`, `dashboard.html` | Evaluation and review |
+| `sweep.json` | Development tuning trials when supplied through `--sweep` |
+
+The default response records blocks after a confirmed detection. A failure-only IP block can be enabled through `bruteforce.preempt_block_factor`. It earns no evaluation credit by itself. A file change without a comparable hash can raise an unverified alert and receives no simulated block. Decision de-duplication is per host within the configured TTL.
+
+## Verify and present
+
+~~~powershell
 python -m unittest discover -s tests -t .
-```
+python -m hids_agent.benchmark --raw --events 1000000
+python -m hids_agent demo --live --out runs/presentation
+~~~
 
-Useful options: `--mode detect|prevent`, `--config overrides.json` (defaults are in
-`hids_agent/config.py`), `--learn-baseline`, `--follow`, `--listen-tcp HOST:PORT`,
-`--listen-http HOST:PORT`.
+During the demo, show a live alert and its block line. Open the finished dashboard and expand the Office alert to show its grouped evidence and score. Show the approved file change in the audit trail, then the evaluation and linked simulated blocks. Repeat with detect mode if time permits.
 
-## Detection rules
+The raw benchmark reports wall-clock throughput and peak process working set on Windows or peak resident set size on supported Unix hosts. It covers reading raw JSONL, detection, simulated response, evaluation and dashboard publication. Its background traffic is deliberately ordinary. This exercises throughput with sparse alerts and does not bound memory for candidate-heavy workloads.
 
-| Rule | Fires on |
-|---|---|
-| `bruteforce` | 5+ failed logons in 300 s then a success (same source and user), password spray, or failures from 3+ sources |
-| `temp_service` | `services.exe`/`systemd` starting a binary from temp, `sc create` / `New-Service` / unit files pointing at temp, service-install events |
-| `office_shell` | A shell with an Office program as parent or ancestor (3 levels) |
-| `fim` | A baselined file modified, deleted, renamed or re-permissioned without approval |
-
-## First steps with the organizers' development stream
-
-1. Run the agent on it and open `summary.json`. `by_category` shows how events were classified;
-   a large `other` count means field names or event types need adding in `hids_agent/normalize.py`.
-2. Check `errors.log` for malformed lines.
-3. Check how a new service appears, and compare it with the signals in the `temp_service` rule.
-4. Build a real baseline and allow-list. The files in `data/*.example.json` contain placeholder hashes.
-
-## Interface for Part B
-
-The agent writes these files to the `--out` folder:
-
-| File | Contents |
-|---|---|
-| `alerts.json` | Final alerts: `id, rule, title, host, entity, first_seen, last_seen, score, severity, signals, mitre, evidence, hits, user, src_ip, context, blocks, would_block` |
-| `alerts.jsonl` | The same as a live feed: `type` is `alert` or `alert_update` |
-| `blocklist.jsonl` | `id, ts, host, action, target, reason, alert_ids, severity, ttl_s, evidence, status, simulated` (`alert_ids` is as of the time of writing) |
-| `incidents.json` | Alerts grouped per host |
-| `audit.jsonl` | Detections suppressed by the allow-list |
-| `watch.jsonl` | Observations that are not alerts, such as failed logons with no success |
-| `summary.json` | Event counts, errors, throughput |
-
-`evidence` entries are `id:<event id>`, or `line:<n>` for events without an ID. At most 500 are kept
-per alert; `hits` counts every repeat.
-
-## Measured performance
-
-In-process on one Windows laptop: roughly 6,000 to 9,000 events per second on a mixed workload.
-Numbers depend on the machine.
-
-## Known limits
-
-- Only the behaviors in the table above are detected.
-- A brute force that never succeeds is recorded in `watch.jsonl` and is not an alert. In prevention
-  mode, 10 or more failures also block the source.
-- Several different users mistyping from one shared NAT address, followed by a success, can look
-  like a password spray (threshold: `spray_users`).
-- File integrity needs a baseline; without one (and without `--learn-baseline`) it stays silent.
+Wazuh documents an agent, server, indexer and dashboard. OSSEC documents host log analysis, integrity checking and active response. This project focuses on a local replay and simulated decisions. [Wazuh components](https://documentation.wazuh.com/current/getting-started/components/index.html) · [OSSEC overview](https://www.ossec.net/docs/)
