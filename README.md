@@ -10,7 +10,7 @@ The full design and the two-person work split are in
 
 | Part | Contents | Status |
 |---|---|---|
-| A: detection | input adapters, normalizer, reorder/dedup buffer, process table, four rules, allow-list | Done, covered by tests |
+| A: detection | input adapters, normalizer, reorder/dedup buffer, process table, four rules, allow-list, stream approvals, baseline export | Done; has tests for pipe, file-follow, TCP and HTTP input |
 | B: scoring and response | `engine.py` (scoring, alert grouping, incidents, blocks) | Written; exercised through the Part A tests, no dedicated scoring or incident tests |
 | B: measurement | `evaluate.py` | Drafted, **never run or tested** |
 | B: remaining | `gen_synthetic.py`, `tune.py`, dashboard | Not started |
@@ -34,8 +34,50 @@ python -m unittest discover -s tests -t .
 ```
 
 Useful options: `--mode detect|prevent`, `--config overrides.json` (defaults are in
-`hids_agent/config.py`), `--learn-baseline`, `--follow`, `--listen-tcp HOST:PORT`,
-`--listen-http HOST:PORT`.
+`hids_agent/config.py`), `--learn-baseline`, `--save-baseline PATH`, `--follow` (JSON Lines only),
+`--listen-tcp HOST:PORT`, `--listen-http HOST:PORT` (requires `Content-Length`; chunked uploads are
+rejected). Followed files and network inputs run until Ctrl-C.
+
+## Baseline
+
+Learn it from the development stream only, review it, then reuse it:
+
+```bash
+python -m hids_agent.agent -i dev_stream.jsonl --learn-baseline --save-baseline data/baseline.json --out out/learn
+python provided_replay.py | python -m hids_agent.agent --baseline data/baseline.json --out out/run1
+```
+
+The first hash seen for a path becomes its baseline. If the first event for a file is the tampering
+itself, the tampered hash is learned, so check the saved file.
+
+## Allow-list
+
+See `data/allowlist.example.json`. Entries that are too loose are ignored with a warning:
+
+- `process` needs `parent`, `child` and `cmdline_regex`; the regex must match the whole command line.
+- `services` needs `path` (`name` is optional).
+- `fim` needs `path` and `hash`, unless it sets `allow_unhashed`.
+- Any entry may add `host` and `expires`.
+
+## Optional settings (both off by default)
+
+Pass these in a `--config` file.
+
+```json
+{"bruteforce": {"alert_without_success": true, "failures_without_success": 10},
+ "approvals": {"from_stream": true, "trusted_approvers": ["change-board"]}}
+```
+
+- `alert_without_success`: failures from one source raise an alert (also for a spray with no
+  success). A later success upgrades the same alert. It does not cover many sources failing against
+  one account without a success. Turn it on only if the development labels count failed attacks.
+- `approvals.from_stream`: accepts approval events (a category such as `change_approval`) with
+  `approved_by`, optional `expires` and `ticket`, plus one of: `path` and hash; `ImagePath` with
+  optional service name; `parent_image`, `image` and `cmdline`; or a single `src_ip`. Approvals apply
+  from their own timestamp, to their own host (every host if they name none), for 1 hour by default
+  and 24 hours at most. With this off, approval events are noted in `watch.jsonl` and ignored.
+  **The organizers' format is unknown, so check these field names against the development stream.**
+  The approver name is only text in the stream: it is not authenticated.
 
 ## Detection rules
 
@@ -65,8 +107,10 @@ The agent writes these files to the `--out` folder:
 | `blocklist.jsonl` | `id, ts, host, action, target, reason, alert_ids, severity, ttl_s, evidence, status, simulated` (`alert_ids` is as of the time of writing) |
 | `incidents.json` | Alerts grouped per host |
 | `audit.jsonl` | Detections suppressed by the allow-list |
-| `watch.jsonl` | Observations that are not alerts, such as failed logons with no success |
+| `watch.jsonl` | Observations that are not alerts, such as failed logons with no success or ignored approvals |
 | `summary.json` | Event counts, errors, throughput |
+
+An `alert_update` can change an alert's `title` (a failed-only alert that later succeeds).
 
 `evidence` entries are `id:<event id>`, or `line:<n>` for events without an ID. At most 500 are kept
 per alert; `hits` counts every repeat.
@@ -79,8 +123,8 @@ Numbers depend on the machine.
 ## Known limits
 
 - Only the behaviors in the table above are detected.
-- A brute force that never succeeds is recorded in `watch.jsonl` and is not an alert. In prevention
-  mode, 10 or more failures also block the source.
+- By default a brute force that never succeeds is recorded in `watch.jsonl` and is not an alert. In
+  prevention mode, 10 or more failures also block the source.
 - Several different users mistyping from one shared NAT address, followed by a success, can look
   like a password spray (threshold: `spray_users`).
 - File integrity needs a baseline; without one (and without `--learn-baseline`) it stays silent.

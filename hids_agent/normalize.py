@@ -124,6 +124,7 @@ class Event:
     signed: bool | None = None
     has_explicit_id: bool = False
     ts_missing: bool = False
+    approval: dict | None = None  # approver / expires / ticket of an approval event
 
 
 def flatten(d: Any, prefix: str = "", out: dict | None = None) -> dict:
@@ -420,12 +421,20 @@ def _file_action(v: Any) -> str | None:
     return t
 
 
+_APPROVAL_CATEGORY = re.compile(r"approv|change[_ -]?(ticket|request|window)|maintenance|allow[_ -]?list|whitelist", re.I)
+_APPROVAL_KEYS = {"approver": ("approved_by", "approver", "authorized_by"),
+                  "expires": ("expires", "expires_at", "expiry", "valid_until"),
+                  "ticket": ("ticket", "ticket_id", "change_id", "change_ticket")}
+
+
 def normalize(raw: dict, seq: int) -> Event:
     clean = strip_labels(raw)
     flat = flatten(clean)
     fields = index_fields(flat)
     cat_raw = fields.get("category")
     text_cat = _category_from_text(str(cat_raw)) if cat_raw is not None and _to_int(cat_raw) is None else None
+    if isinstance(cat_raw, str) and _APPROVAL_CATEGORY.search(cat_raw):
+        text_cat = "approval"
     explicit_id, eid = _split_ids(flat, text_cat is not None)
     ref = f"id:{explicit_id}" if explicit_id is not None else f"line:{seq}"
     ts_raw = fields.get("ts")
@@ -480,6 +489,9 @@ def normalize(raw: dict, seq: int) -> Event:
         elif fields.get("path") or fields.get("hash"):
             cat = "file"
     ev.category = cat or "other"
+    if ev.category == "approval":
+        ev.approval = {name: next((flat[k] for k in keys if flat.get(k) not in (None, "")), None)
+                       for name, keys in _APPROVAL_KEYS.items()}
 
     if ev.category == "auth":
         if ev.outcome is None:

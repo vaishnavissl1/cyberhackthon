@@ -27,6 +27,15 @@ from .engine import Engine, load_baseline
 from .normalize import normalize
 
 EOF = object()
+_SEQ_LOCK = threading.Lock()
+
+
+def _put(q: queue.Queue, counter: list, obj: dict) -> None:
+    """Queue one event under a unique sequence number (network inputs are multi-threaded)."""
+    with _SEQ_LOCK:
+        counter[0] += 1
+        seq = counter[0]
+    q.put((seq, obj))
 
 
 # ------------------------------------------------------------------ adapters
@@ -39,8 +48,7 @@ def _emit_text(text: str, q: queue.Queue, counter: list) -> None:
         try:
             obj = json.loads(s)
             for o in _expand(obj):
-                counter[0] += 1
-                q.put((counter[0], o))
+                _put(q, counter, o)
             return
         except json.JSONDecodeError:
             pass
@@ -70,19 +78,16 @@ def _emit_line(line: str, q: queue.Queue, counter: list) -> None:
     line = line.strip().lstrip("﻿").rstrip(",")
     if not line or line in ("[", "]", "{", "}"):
         return
-    counter[0] += 1
     try:
         obj = json.loads(line)
     except json.JSONDecodeError as e:
-        q.put((counter[0], {"__error__": f"bad json: {e.msg}", "__raw__": line[:500]}))
+        _put(q, counter, {"__error__": f"bad json: {e.msg}", "__raw__": line[:500]})
         return
     expanded = list(_expand(obj))
     if not expanded:
-        q.put((counter[0], {"__error__": "not an object", "__raw__": line[:500]}))
-    for i, o in enumerate(expanded):
-        if i:
-            counter[0] += 1
-        q.put((counter[0], o))
+        _put(q, counter, {"__error__": "not an object", "__raw__": line[:500]})
+    for o in expanded:
+        _put(q, counter, o)
 
 
 def _decode_incremental(stream, buf: str, q: queue.Queue, counter: list) -> None:
@@ -107,14 +112,12 @@ def _decode_incremental(stream, buf: str, q: queue.Queue, counter: list) -> None
                 pass
             else:
                 for o in _expand(obj):
-                    counter[0] += 1
-                    q.put((counter[0], o))
+                    _put(q, counter, o)
                 buf = buf[end:]
                 continue
             nxt = buf.find("\n{", 1)
             if len(buf) > 1_000_000 and nxt > 0:      # unrecoverable element: skip it
-                counter[0] += 1
-                q.put((counter[0], {"__error__": "bad json element", "__raw__": buf[:500]}))
+                _put(q, counter, {"__error__": "bad json element", "__raw__": buf[:500]})
                 buf = buf[nxt:]
                 continue
         line = stream.readline()
@@ -186,7 +189,11 @@ def http_reader(addr: str, q: queue.Queue, counter: list) -> None:
 
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
-            n = int(self.headers.get("Content-Length", 0))
+            length = self.headers.get("Content-Length", "")
+            if not length.isdigit():
+                self.send_error(411, "Content-Length required")
+                return
+            n = int(length)
             _emit_text(self.rfile.read(n).decode("utf-8", "replace"), q, counter)
             self.send_response(204)
             self.end_headers()
@@ -369,6 +376,10 @@ def run(args) -> dict:
         (out / "incidents.json").write_text(json.dumps(engine.incidents(), indent=2), encoding="utf-8")
         (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         (out / "config_used.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    if args.save_baseline:
+        target = Path(args.save_baseline)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(engine.rules[3].export_baseline(), indent=2), encoding="utf-8")
     outputs.close()
     if not args.quiet:
         print(json.dumps(summary, indent=2), file=sys.stderr)
@@ -387,6 +398,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", help="JSON/YAML overrides of hids_agent/config.py defaults")
     p.add_argument("--baseline", help="hash baseline JSON")
     p.add_argument("--learn-baseline", action="store_true", help="first-seen hash becomes baseline")
+    p.add_argument("--save-baseline", metavar="PATH",
+                   help="write the baseline (including learned hashes) after the run")
     p.add_argument("--allowlist", help="allow-list JSON/YAML")
     p.add_argument("--out", "-o", default="out", help="output directory")
     p.add_argument("--quiet", "-q", action="store_true")
