@@ -12,7 +12,7 @@
     <nav class="topbar" aria-label="Main navigation">
       <a class="brand" href="/"><span class="mark" aria-hidden="true"><i></i></span>Replay Console</a>
       <div class="top-links"><a href="/" aria-current="page">Overview</a><a href="/cases">Cases</a></div>
-      <a class="button button--light" href="#run-case">New replay <span aria-hidden="true">↗</span></a>
+      <a class="button button--light" href="/replay">New replay <span aria-hidden="true">↗</span></a>
     </nav>
   </div>
   <header class="hero hero--workspace">
@@ -21,65 +21,15 @@
       <h1>Host event replay<br>and investigation</h1>
       <p>Replay host telemetry, inspect the alerts your rules raise, and verify simulated prevention against labeled sequences.</p>
       <div class="hero-actions">
-        <a class="button button--light" href="#run-case">Start a replay <span aria-hidden="true">↘</span></a>
+        <a class="button button--light" href="/replay">Start a replay <span aria-hidden="true">→</span></a>
         <a class="button button--ghost" href="/cases">Browse cases</a>
       </div>
     </div>
   </header>
   <main id="main" class="shell">
-    <div class="workspace-grid">
-      <section id="run-case" class="panel" aria-labelledby="run-title" style="scroll-margin-top:95px">
-        <span class="eyebrow">Run a case</span>
-        <h2 id="run-title">New replay</h2>
-        <p class="panel-intro">Choose a bundled stream or import your own telemetry.</p>
-        <form id="run">
-          <div class="fields">
-            <label>Event source
-              <select id="split">
-                <option value="dev">Synthetic development</option>
-                <option value="holdout">Synthetic holdout</option>
-                <option value="raw">Upload raw host events</option>
-                <option value="import">Upload candidate handoff</option>
-              </select>
-            </label>
-            <label>Response mode
-              <select id="mode">
-                <option value="prevent">Prevent (simulated)</option>
-                <option value="detect">Detect only</option>
-              </select>
-            </label>
-          </div>
-          <div id="uploads" class="uploads" hidden>
-            <label><span id="input-label">Event file</span><input id="handoff" type="file" accept=".json,.jsonl,.ndjson"></label>
-            <label>Sequence labels (optional)<input id="labels" type="file" accept=".json"></label>
-            <div id="raw-policy" class="fields" hidden>
-              <label>Hash baseline (optional)<input id="baseline" type="file" accept=".json"></label>
-              <label>Allow-list (optional)<input id="allowlist" type="file" accept=".json"></label>
-            </div>
-            <label id="handoff-policy" hidden>Protected IPs and users (optional)<input id="protected" type="file" accept=".json"></label>
-          </div>
-          <div class="form-footer">
-            <button class="button" id="submit" type="submit">Run replay <span aria-hidden="true">→</span></button>
-            <p id="message" role="status" aria-live="polite">Blocks are recorded as simulated decisions.</p>
-          </div>
-        </form>
-      </section>
-      <section class="panel" aria-labelledby="recent-title">
-        <span class="eyebrow">Case library</span>
-        <h2 id="recent-title">Recent replays</h2>
-        $recent
-        <a href="/cases">View all cases <span aria-hidden="true">↗</span></a>
-      </section>
-    </div>
-    <section class="section" aria-labelledby="workflow-title">
-      <div class="section-head">
-        <div><span class="eyebrow">Investigate a case</span><h2 id="workflow-title">Follow the evidence</h2></div>
-      </div>
-      <div class="tile-grid">
-        <div class="tile"><h3>Inspect alerts</h3><p>Filter by host and severity. Open any alert to see the rules, score signals, and event references.</p></div>
-        <div class="tile"><h3>Review prevention</h3><p>Trace each simulated block to its alerts and review allow-list suppressions.</p></div>
-        <div class="tile"><h3>Measure results</h3><p>Compare sequence recall, precision, and false alarms when labels are available.</p></div>
-      </div>
+    <section class="section" aria-labelledby="recent-title">
+      <div class="section-head"><h2 id="recent-title">Recent replays</h2><a href="/cases">View all cases &#8599;</a></div>
+      <div class="home-cases">$recent</div>
     </section>
   </main>
   <footer class="footer"><div class="shell"><strong>Replay Console</strong><span>Host telemetry and simulated prevention</span></div></footer>
@@ -89,60 +39,6 @@
     addEventListener('scroll', tint, {passive: true});
     tint();
 
-    const field = id => document.getElementById(id);
-    function updateInputs() {
-      const kind = field('split').value;
-      const raw = kind === 'raw';
-      const upload = raw || kind === 'import';
-      field('uploads').hidden = !upload;
-      field('raw-policy').hidden = !raw;
-      field('handoff-policy').hidden = raw;
-      field('handoff').required = upload;
-      field('handoff').accept = raw ? '.json,.jsonl,.ndjson' : '.jsonl,.ndjson,.txt';
-      field('input-label').textContent = raw ? 'Raw event JSON or JSONL' : 'Candidate JSONL';
-    }
-    field('split').addEventListener('change', updateInputs);
-    updateInputs();
-
-    field('run').addEventListener('submit', async event => {
-      event.preventDefault();
-      const button = field('submit');
-      const message = field('message');
-      button.disabled = true;
-      message.removeAttribute('data-error');
-      message.textContent = 'Processing replay…';
-      try {
-        const payload = {split: field('split').value, mode: field('mode').value};
-        const raw = payload.split === 'raw';
-        if (raw || payload.split === 'import') {
-          const file = field('handoff').files[0];
-          if (!file) throw new Error('Choose an input file.');
-          const fields = raw ? ['labels', 'baseline', 'allowlist'] : ['labels', 'protected'];
-          const selected = fields.filter(key => field(key).files.length);
-          if (selected.reduce((size, key) => size + field(key).files[0].size, file.size) > 8 * 1024 * 1024) {
-            throw new Error('Choose files under 8 MiB total.');
-          }
-          payload[raw ? 'events' : 'handoff'] = await file.text();
-          for (const key of selected) {
-            const attachment = field(key).files[0];
-            try {
-              payload[key === 'protected' ? 'never_block' : key] = JSON.parse(await attachment.text());
-            } catch {
-              throw new Error('Invalid JSON in ' + attachment.name + '.');
-            }
-          }
-        }
-        const response = await fetch('/run', {
-          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
-        });
-        if (!response.ok) throw new Error(await response.text());
-        location.assign((await response.json()).url);
-      } catch (error) {
-        message.textContent = error.message;
-        message.setAttribute('data-error', '');
-        button.disabled = false;
-      }
-    });
   </script>
 </body>
 </html>

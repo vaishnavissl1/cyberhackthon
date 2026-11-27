@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Case report | Replay Console</title>
+  <title>$title | Replay Console</title>
   <style>$theme</style>
 </head>
 <body>
@@ -12,12 +12,11 @@
     <nav class="topbar solid" aria-label="Main navigation">
       <a class="brand" href="$home"><span class="mark" aria-hidden="true"><i></i></span>Replay Console</a>
       <div class="top-links">$top_links</div>
-      $new_replay
     </nav>
   </div>
-  <header class="hero hero--compact" id="top"><div class="shell hero-inner">
+  <header class="hero hero--compact hero--case" id="top"><div class="shell hero-inner">
     <span class="eyebrow">Replay case</span>
-    <h1>Replay findings</h1>
+    <h1>$heading</h1>
     <p class="status-line">$source <span class="badge badge--$status_class">$status</span><span>$mode mode</span></p>
     <div class="hero-actions">
       <a class="button button--light" href="$report_link">Download report ↓</a>
@@ -26,62 +25,10 @@
   </div></header>
   <main id="main" class="shell case-main">
     <nav class="case-tabs" aria-label="Case sections">
-      <a href="#overview">Overview</a><a href="#alerts">Alerts</a><a href="#evaluation">Evaluation</a>
-      <a href="#response">Response</a><a href="#audit">Audit trail</a>
+      $case_navigation
     </nav>
-    <section id="overview" class="section">
-      <div class="section-head"><div><span class="eyebrow">Overview</span><h2>Case summary</h2></div></div>
-      $evaluation_note
-      <div class="metrics">$metrics</div>
-      <div class="panel">
-        <div class="chart-summary"><h3>Events and alerts over time</h3><span class="muted">$events events · $alert_count alerts$throughput</span></div>
-        $volume
-      </div>
-    </section>
-    <section id="alerts" class="section">
-      <div class="section-head"><div><span class="eyebrow">Evidence</span><h2>Alert timeline</h2><p class="muted">$severity</p></div></div>
-      <div class="filters">
-        <label>Severity <select id="severity"><option value="">All severities</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option></select></label>
-        <label>Host <select id="host"><option value="">All hosts</option>$host_options</select></label>
-      </div>
-      $alerts
-      <p id="nohits" class="empty" role="status" hidden>No alerts match these filters.</p>
-      <div class="panel section"><h3>Host incidents</h3>$incidents</div>
-    </section>
-    <section id="evaluation" class="section">
-      <div class="section-head"><div><span class="eyebrow">Evaluation</span><h2>Detection results</h2></div></div>
-      <div class="panel"><h3>Results by rule</h3>$rules$match_info</div>
-      $sweep
-    </section>
-    <section id="response" class="section">
-      <div class="section-head"><div><span class="eyebrow">Response</span><h2>Simulated decisions</h2></div></div>
-      <div class="panel">$decisions</div>
-    </section>
-    <section id="audit" class="section">
-      <div class="section-head"><div><span class="eyebrow">Audit trail</span><h2>Approvals and watch records</h2></div></div>
-      <div class="panel">$notes</div>
-    </section>
+    $body
   </main>
   <footer class="footer"><div class="shell"><strong>Replay Console</strong><a href="#top">Back to top ↑</a></div></footer>
-  <script>
-    const severity = document.getElementById('severity');
-    const host = document.getElementById('host');
-    const groups = [...document.querySelectorAll('[data-host]')];
-    function filterAlerts() {
-      let matches = 0;
-      for (const group of groups) {
-        const rows = [...group.querySelectorAll('[data-severity]')];
-        for (const row of rows) {
-          row.hidden = Boolean((severity.value && row.dataset.severity !== severity.value) ||
-                               (host.value && group.dataset.host !== host.value));
-          if (!row.hidden) matches++;
-        }
-        group.hidden = rows.every(row => row.hidden);
-      }
-      document.getElementById('nohits').hidden = !groups.length || matches > 0;
-    }
-    severity.addEventListener('change', filterAlerts);
-    host.addEventListener('change', filterAlerts);
-  </script>
 </body>
 </html>

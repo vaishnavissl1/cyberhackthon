@@ -12,7 +12,7 @@
     <nav class="topbar solid" aria-label="Main navigation">
       <a class="brand" href="/"><span class="mark" aria-hidden="true"><i></i></span>Replay Console</a>
       <div class="top-links"><a href="/">Overview</a><a href="/cases" aria-current="page">Cases</a></div>
-      <a class="button button--light" href="/#run-case">New replay <span aria-hidden="true">↗</span></a>
+      <a class="button button--light" href="/replay">New replay <span aria-hidden="true">↗</span></a>
     </nav>
   </div>
   <header class="hero hero--compact"><div class="shell hero-inner">
@@ -27,7 +27,7 @@
     $cases
     <p id="no-cases" class="empty" role="status" hidden>No cases match this search.</p>
   </main>
-  <footer class="footer"><div class="shell"><strong>Replay Console</strong><a href="/#run-case">Start a replay →</a></div></footer>
+  <footer class="footer"><div class="shell"><strong>Replay Console</strong><a href="/replay">Start a replay →</a></div></footer>
   <script>
     const cases = [...document.querySelectorAll('.case-row')];
     document.getElementById('search').addEventListener('input', event => {

@@ -1,0 +1,29 @@
+    <section id="alerts" class="section">
+      <div class="section-head"><div><span class="eyebrow">Evidence</span><h2>Alert timeline</h2><p class="muted">$severity</p></div></div>
+      <div class="filters">
+        <label>Severity <select id="severity"><option value="">All severities</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option></select></label>
+        <label>Host <select id="host"><option value="">All hosts</option>$host_options</select></label>
+      </div>
+      $alerts
+      <p id="nohits" class="empty" role="status" hidden>No alerts match these filters.</p>
+    </section>
+  <script>
+    const severity = document.getElementById('severity');
+    const host = document.getElementById('host');
+    const groups = [...document.querySelectorAll('[data-host]')];
+    function filterAlerts() {
+      let matches = 0;
+      for (const group of groups) {
+        const rows = [...group.querySelectorAll('[data-severity]')];
+        for (const row of rows) {
+          row.hidden = Boolean((severity.value && row.dataset.severity !== severity.value) ||
+                               (host.value && group.dataset.host !== host.value));
+          if (!row.hidden) matches++;
+        }
+        group.hidden = rows.every(row => row.hidden);
+      }
+      document.getElementById('nohits').hidden = !groups.length || matches > 0;
+    }
+    severity.addEventListener('change', filterAlerts);
+    host.addEventListener('change', filterAlerts);
+  </script>

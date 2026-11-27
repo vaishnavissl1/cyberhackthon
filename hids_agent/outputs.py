@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .contract import lines, read_json, write_json, write_lines
-from .dashboard import percent, render
+from .dashboard import PAGES, percent, render, report_filename
 
 
 @contextmanager
@@ -70,8 +70,11 @@ def publish_report(folder, run, report):
         stage = Path(tmp)
         write_json(stage / "report.json", report)
         (stage / "report.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-        (stage / "dashboard.html").write_text(render(run, report), encoding="utf-8")
-        for name in ("report.json", "report.md", "dashboard.html"):
+        for view in PAGES:
+            (stage / report_filename(view)).write_text(render(run, report, view=view), encoding="utf-8")
+        names = ("report.json", "report.md", *(report_filename(view) for view in PAGES if view != "overview"),
+                 report_filename("overview"))
+        for name in names:
             os.replace(stage / name, folder / name)
 
 

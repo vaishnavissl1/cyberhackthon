@@ -53,11 +53,14 @@ def case_cards(root, folders):
     return '<div class="case-list"><p class="empty">No replays here yet. Run a case to start the library.</p></div>'
 
 
-def workspace(root: Path, *, library=False):
+def workspace(root: Path, page="overview"):
+    name = {"overview": "index.html", "replay": "replay.html", "cases": "cases.html"}[page]
+    template = Template(Path(__file__).with_name(name).read_text(encoding="utf-8"))
+    if page == "replay":
+        return template.substitute(theme=THEME)
     folders = [folder for entry in root.iterdir() if (folder := case_folder(root, entry.name))]
     folders.sort(key=lambda folder: folder.stat().st_mtime, reverse=True)
-    name = "cases.html" if library else "index.html"
-    cases = case_cards(root, folders if library else folders[:4])
+    cases = case_cards(root, folders if page == "cases" else folders[:4])
     count = len(folders)
-    return Template(Path(__file__).with_name(name).read_text(encoding="utf-8")).substitute(
-        theme=THEME, recent=cases, cases=cases, case_count=f"{count} {'case' if count == 1 else 'cases'}")
+    return template.substitute(theme=THEME, recent=cases, cases=cases,
+                               case_count=f"{count} {'case' if count == 1 else 'cases'}")

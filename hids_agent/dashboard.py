@@ -56,41 +56,89 @@ def chart(volume, alerts):
             'Events in teal, alerts in amber. Each uses its own scale.</p>')
 
 
-def render(run, report, *, case_url=None):
+PAGES = {
+    "overview": "Overview",
+    "alerts": "Alerts",
+    "incidents": "Incidents",
+    "evaluation": "Evaluation",
+    "response": "Response",
+    "audit": "Audit trail",
+}
+
+
+def report_filename(view):
+    return "dashboard.html" if view == "overview" else f"dashboard-{view}.html"
+
+
+def report_href(view, case_url=None):
+    if not case_url:
+        return report_filename(view)
+    return case_url if view == "overview" else f"{case_url}/{view}"
+
+
+def overview(run, report):
     summary = run["summary"]
-    status = report["status"]
-    cards = [("Precision", percent(report["precision"])), ("Sequence recall", percent(report["recall"])),
-             ("False alarms / limit", f'{report["false_alarms"]} / 2' if "false_alarms" in report else "\u2014"),
-             ("Blocks on attacks", str(len(report["blocks_on_attacks"])) if "blocks_on_attacks" in report else "—")]
-    metrics = "".join(f'<div class="metric"><span>{esc(label)}</span><strong>{esc(value)}</strong></div>'  for label, value in cards)
+    cards = [
+        ("Precision", percent(report["precision"])),
+        ("Sequence recall", percent(report["recall"])),
+        ("False alarms / limit", f'{report["false_alarms"]} / 2' if "false_alarms" in report else "\u2014"),
+        ("Blocks on attacks", len(report["blocks_on_attacks"]) if "blocks_on_attacks" in report else "\u2014"),
+    ]
+    return {
+        "metrics": "".join(f'<div class="metric"><span>{esc(label)}</span><strong>{esc(value)}</strong></div>'
+                           for label, value in cards),
+        "events": esc(summary["events"]),
+        "throughput": (f" \u00b7 {rate:,.0f} events/s"
+                       if (rate := summary.get("events_per_second")) is not None else ""),
+        "alert_count": len(run["alerts"]),
+        "volume": chart(summary["events_per_minute"], run["alerts"]),
+        "evaluation_note": evaluation_note(report),
+    }
+
+
+def evaluation_note(report):
+    return f'<p class="summary-note">{esc(report["reason"])}</p>' if "reason" in report else ""
+
+
+def alerts_page(run, report):
     alerts = defaultdict(list)
-    for a in sorted(run["alerts"], key=lambda row: row["first_seen"]):
-        details = {"Signals": a["signals"], "Context": a["context"], "Evidence": a["evidence"],
-                   "Requested blocks": a.get("requested_blocks", a.get("would_block", [])), "Block IDs": a["blocks"],
-                   "Techniques": a.get("mitre", []), "Label match": report.get("matches", {}).get(a["id"])}
-        alerts[a["host"]].append(f'<details class="alert" data-severity="{esc(a["severity"])}"><summary><small>{esc(a["id"])}</small>'
-                      f'<b>{esc(a["title"])}</b><span class="badge {esc(a["severity"])}">'
-                      f'{esc(a["severity"])} · {esc(a["score"])}</span></summary>'
-                      f'<div class="alert-content"><p>{esc(a["host"])} · {esc(a["entity"])} · {esc(utc(a["first_seen"]))} UTC'
-                      f' · {esc(a["hits"])} observation(s)</p><pre>{esc(json.dumps(details, indent=2))}</pre></div></details>')
-    rules = table(["Rule", "Precision", "False alarms", "Sequence recall", "Sequences found"],
-                  [[k, percent(r["precision"]), r["false_alarms"], percent(r["recall"]), f'{r["detected"]}/{r["sequences"]}']
-                   for k, r in report.get("per_rule", {}).items()], "Supply labels to score this run.")
-    decisions = table(["ID", "Host", "Action", "Target", "Status", "Alerts"],
-                      [[b["id"], b["host"], b["action"], b["target"], b["status"], ", ".join(b["alert_ids"])]
-                       for b in run["blocks"]], "No simulated block decisions.")
-    notes = table(["Record", "Host", "Reason", "Approval", "Evidence"],
-                  [[kind, n["host"], n["reason"], n.get("entry", "—"), ", ".join(n["evidence"])]
-                   for kind in ("audit", "watch") for n in run[kind]], "No audit or watch records.")
-    incidents = table(["Incident", "Host", "First seen (UTC)", "Alerts"],
-                      [[i["id"], i["host"], utc(i["first_seen"]), ", ".join(i["alert_ids"])]
-                       for i in run["incidents"]], "No incidents.")
-    match_info = ""
-    if status in ("PASS", "FAIL"):
-        lag = report['mean_latency_s']
-        delay = "—" if lag is None else f"{lag:.1f} s"
-        match_info = (f'<p class="summary-note">F1 {percent(report["f1"])} · Mean detection latency {delay} · '
-                      f'Missed sequences {esc(", ".join(report["missed"]) or "none")} · '
+    levels = {"critical": 0, "high": 0, "medium": 0}
+    for alert in sorted(run["alerts"], key=lambda row: row["first_seen"]):
+        details = {
+            "Signals": alert["signals"], "Context": alert["context"], "Evidence": alert["evidence"],
+            "Requested blocks": alert.get("requested_blocks", alert.get("would_block", [])),
+            "Block IDs": alert["blocks"], "Techniques": alert.get("mitre", []),
+            "Label match": report.get("matches", {}).get(alert["id"]),
+        }
+        severity = alert["severity"]
+        levels[severity] = levels.get(severity, 0) + 1
+        alerts[alert["host"]].append(
+            f'<details class="alert" data-severity="{esc(severity)}"><summary><small>{esc(alert["id"])}</small>'
+            f'<b>{esc(alert["title"])}</b><span class="badge {esc(severity)}">'
+            f'{esc(severity)} \u00b7 {esc(alert["score"])}</span></summary>'
+            f'<div class="alert-content"><p>{esc(alert["host"])} \u00b7 {esc(alert["entity"])} \u00b7 '
+            f'{esc(utc(alert["first_seen"]))} UTC \u00b7 {esc(alert["hits"])} observation(s)</p>'
+            f'<pre>{esc(json.dumps(details, indent=2))}</pre></div></details>')
+    groups = "".join(f'<div class="host" data-host="{esc(host)}"><h3>{esc(host)}</h3>{"".join(rows)}</div>'
+                     for host, rows in alerts.items())
+    return {
+        "alerts": groups or '<p class="empty">No confirmed detections.</p>',
+        "host_options": "".join(f'<option value="{esc(host)}">{esc(host)}</option>' for host in sorted(alerts)),
+        "severity": " \u00b7 ".join(f"{count} {esc(level)}" for level, count in levels.items()),
+    }
+
+
+def evaluation(run, report):
+    rules = table(
+        ["Rule", "Precision", "False alarms", "Sequence recall", "Sequences found"],
+        [[k, percent(r["precision"]), r["false_alarms"], percent(r["recall"]), f'{r["detected"]}/{r["sequences"]}']
+         for k, r in report.get("per_rule", {}).items()], "Supply labels to score this run.")
+    match_info = evaluation_note(report)
+    if report["status"] in ("PASS", "FAIL"):
+        lag = report["mean_latency_s"]
+        delay = "\u2014" if lag is None else f"{lag:.1f} s"
+        match_info = (f'<p class="summary-note">F1 {percent(report["f1"])} \u00b7 Mean detection latency {delay} \u00b7 '
+                      f'Missed sequences {esc(", ".join(report["missed"]) or "none")} \u00b7 '
                       f'False alerts {esc(", ".join(report["false_alert_ids"]) or "none")}</p>')
         match_info += table(["Labeled sequence", "Detection latency (s)"],
                             [[key, f"{value:g}"] for key, value in report["latency_s"].items()],
@@ -106,33 +154,61 @@ def render(run, report, *, case_url=None):
             ["Parameters", "Precision", "Recall", "False alarms", "Target"],
             [[json.dumps(t["config"]), percent(t["precision"]), percent(t["recall"]), t["false_alarms"], t["status"]]
              for t in trials], "No trial results.") + "</div>"
-    levels = {"critical": 0, "high": 0, "medium": 0}
-    for alert in run["alerts"]:
-        levels[alert["severity"]] = levels.get(alert["severity"], 0) + 1
-    severity = " · ".join(f"{n} {name}" for name, n in levels.items())
-    rate = summary.get("events_per_second")
-    throughput = f" · {rate:,.0f} event receipts/s" if rate is not None else ""
-    template = (Path(__file__).with_name("dashboard.html")).read_text(encoding="utf-8")
-    evaluation_note = f'<p class="summary-note">{esc(report["reason"])}</p>' if "reason" in report else ""
+    return {"rules": rules, "match_info": match_info, "sweep": sweep_table}
+
+
+def incidents_page(run, report):
+    return {"incidents": table(
+        ["Incident", "Host", "First seen (UTC)", "Alerts"],
+        [[i["id"], i["host"], utc(i["first_seen"]), ", ".join(i["alert_ids"])] for i in run["incidents"]],
+        "No incidents.")}
+
+
+def response_page(run, report):
+    return {"decisions": table(
+        ["ID", "Host", "Action", "Target", "Status", "Alerts"],
+        [[b["id"], b["host"], b["action"], b["target"], b["status"], ", ".join(b["alert_ids"])] for b in run["blocks"]],
+        "No simulated block decisions.")}
+
+
+def audit_page(run, report):
+    return {"notes": table(
+        ["Record", "Host", "Reason", "Approval", "Evidence"],
+        [[kind, n["host"], n["reason"], n.get("entry", "\u2014"), ", ".join(n["evidence"])]
+         for kind in ("audit", "watch") for n in run[kind]], "No audit or watch records.")}
+
+
+RENDERERS = {"overview": overview, "alerts": alerts_page, "incidents": incidents_page,
+             "evaluation": evaluation, "response": response_page, "audit": audit_page}
+
+
+def case_navigation(view, case_url):
+    links = []
+    for key, label in PAGES.items():
+        current = ' aria-current="page"' if key == view else ""
+        links.append(f'<a href="{esc(report_href(key, case_url))}"{current}>{label}</a>')
+    return "".join(links)
+
+
+def render(run, report, *, view="overview", case_url=None):
+    summary = run["summary"]
+    status = report["status"]
     if case_url:
         home = "/"
-        top_links = '<a href="/">Overview</a><a href="/cases">Cases</a>'
-        new_replay = '<a class="button button--light" href="/#run-case">New replay &#8599;</a>'
+        top_links = '<a href="/">Home</a><a href="/replay">New replay</a><a href="/cases">Cases</a>'
         artifact_base = case_url + "/files/"
     else:
-        home = "#top"
-        top_links = '<a href="#alerts">Alerts</a><a href="#evaluation">Evaluation</a>'
-        new_replay = ""
+        home = report_filename("overview")
+        top_links = f'<a href="{home}">Case overview</a>'
         artifact_base = ""
-    groups = "".join(f'<div class="host" data-host="{esc(host)}"><h3>{esc(host)}</h3>{"".join(rows)}</div>'
-                     for host, rows in alerts.items())
-    host_options = "".join(f'<option value="{esc(host)}">{esc(host)}</option>' for host in sorted(alerts))
+    template_root = Path(__file__).parent
+    section = RENDERERS[view](run, report)
+    template = (template_root / "dashboard.html").read_text(encoding="utf-8")
+    part = (template_root / "report_pages" / f"{view}.html").read_text(encoding="utf-8")
+    body = Template(part).substitute(section)
     return Template(template).substitute(
-        theme=THEME, home=home, top_links=top_links, new_replay=new_replay,
+        theme=THEME, home=esc(home), top_links=top_links,
+        title=PAGES[view], heading="Replay findings" if view == "overview" else PAGES[view],
         report_link=esc(artifact_base + "report.md"), blocks_link=esc(artifact_base + "blocklist.jsonl"),
         source=esc(summary["source"]), mode=esc(summary["mode"]), status_class=esc(status.lower()), status=esc(status),
-        events=esc(summary["events"]), throughput=throughput, severity=severity, alert_count=len(run["alerts"]),
-        metrics=metrics, volume=chart(summary["events_per_minute"], run["alerts"]),
-        alerts=groups or '<p class="empty">No confirmed detections.</p>', host_options=host_options,
-        rules=rules, decisions=decisions, notes=notes, incidents=incidents, match_info=match_info, sweep=sweep_table,
-        evaluation_note=evaluation_note)
+        case_navigation=case_navigation(view, case_url), body=body)

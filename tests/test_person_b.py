@@ -164,7 +164,7 @@ class EvaluationTests(unittest.TestCase):
         row = office()
         row["title"] = '<img src=x onerror="alert(1)">'
         data = run([row])
-        html = render(data, score(data, None))
+        html = render(data, score(data, None), view="alerts")
         self.assertIn("&lt;img", html)
         self.assertNotIn(row["title"], html)
 
