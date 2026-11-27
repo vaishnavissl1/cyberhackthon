@@ -5,12 +5,13 @@ an alert and applies the response (block) policy.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
 
 from .allowlist import AllowList
-from .normalize import Event, base, exe_from_cmd, is_private_ip, path_tokens
+from .normalize import Event, base, exe_from_cmd, is_private_ip, parse_ts, path_tokens
 
 _SUSP_CMD = re.compile(
     r"(-enc(odedcommand)?\b|-e\s+[a-z0-9+/=]{20,}|frombase64string|downloadstring|downloadfile|"
@@ -35,6 +36,7 @@ class Candidate:
     user: str | None = None
     src_ip: str | None = None
     base_override: int | None = None
+    escalates: bool = False   # replaces the title/context of the alert it merges into
 
 
 @dataclass
@@ -69,6 +71,74 @@ class Suppressed:
 
 
 # ---------------------------------------------------------------------------
+# approval events carried in the stream (optional, off by default)
+# ---------------------------------------------------------------------------
+class Approvals:
+    name = "approval"
+
+    def __init__(self, cfg: dict, allow: AllowList):
+        c = cfg["approvals"]
+        self.enabled = bool(c["from_stream"])
+        self.trusted = {str(x).strip().lower() for x in c["trusted_approvers"]}
+        self.ttl = float(c["default_ttl_s"])
+        self.max_ttl = float(c["max_ttl_s"])
+        self.allow = allow
+
+    @staticmethod
+    def _entry(ev: Event) -> tuple[str, dict] | None:
+        """The narrowest allow-list entry the event describes, or None if too broad."""
+        wild = lambda s: any(ch in s for ch in "*?[")
+        if ev.service_path:
+            return None if wild(ev.service_path) else \
+                ("services", {"name": ev.service_name, "path": ev.service_path})
+        if ev.parent_image:
+            if not (ev.image and ev.cmdline):
+                return None
+            return "process", {"parent": ev.parent_image, "child": ev.image,
+                               "cmdline_regex": re.escape(ev.cmdline.strip())}
+        if ev.path:
+            digest = ev.hashes.get("sha256") or next(iter(ev.hashes.values()), None)
+            if not digest or wild(ev.path):
+                return None
+            return "fim", {"path": ev.path, "hash": digest}
+        if ev.src_ip:
+            try:
+                ipaddress.ip_address(ev.src_ip)      # a single address, not a network
+            except ValueError:
+                return None
+            return "auth", {"src_ip": ev.src_ip}
+        return None
+
+    def on_event(self, ev: Event) -> list:
+        if ev.category != "approval":
+            return []
+        info = ev.approval or {}
+        who = str(info.get("approver") or "").strip().lower()
+
+        def note(text: str) -> list:
+            return [Watch(self.name, ev.host, ev.ts, text, [ev.ref],
+                          {"approver": who or None, "ticket": info.get("ticket")})]
+
+        if not self.enabled:
+            return note("approval event ignored: approvals.from_stream is off")
+        if not ("*" in self.trusted or (who and who in self.trusted)):
+            return note("approval rejected: approver is not trusted")
+        made = self._entry(ev)
+        if made is None:
+            return note("approval rejected: too broad or missing fields")
+        kind, entry = made
+        expires = parse_ts(info.get("expires"))
+        expires = ev.ts + self.ttl if expires is None else min(expires, ev.ts + self.max_ttl)
+        entry.update(expires=expires, ticket=info.get("ticket"), approved_by=who or None,
+                     source=ev.ref)
+        if ev.host != "unknown":
+            entry["host"] = ev.host
+        if not self.allow.add(kind, entry, starts=ev.ts):
+            return note("approval rejected: too broad or missing fields")
+        return note(f"approval accepted: {kind}")
+
+
+# ---------------------------------------------------------------------------
 # R1 brute force -> success
 # ---------------------------------------------------------------------------
 class BruteForce:
@@ -91,6 +161,10 @@ class BruteForce:
         self.by_user: dict[tuple, deque] = defaultdict(deque)  # (host, user) -> (ts, ref, ip)
         self.preblocked: set[str] = set()
         self.watched: set[tuple] = set()
+        self.fail_only = bool(c["alert_without_success"])
+        self.fail_n = int(c["failures_without_success"])
+        self.failed: dict[tuple, dict] = {}      # (host, source) -> failed-only alert state
+        self.src_users: dict[tuple, dict] = {}   # (host, source) -> {user: last failure ts}
 
     def _trim(self, dq: deque, now: float) -> None:
         horizon = self.w + self.after
@@ -117,6 +191,9 @@ class BruteForce:
             for k in dead:
                 del d[k]
         self.watched &= set(self.pair)
+        for k in [k for k, st in self.failed.items() if now - st["last"] > horizon]:
+            del self.failed[k]
+            self.src_users.pop(k, None)
 
     def _burst(self, dq: deque, now: float) -> list:
         """Failures inside the window ending at the last failure, provided the last
@@ -128,6 +205,59 @@ class BruteForce:
         if now - last > self.after:
             return []
         return [x for x in before if last - x[0] <= self.w]
+
+    def _failed_only(self, ev: Event, pair_key: tuple, allowed: dict | None):
+        """Alert on failures alone: once per source at the threshold, then a
+        continuation every n_fail failures so a long flood stays one alert."""
+        host, ts = ev.host, ev.ts
+        key = (host, ev.src_ip or f"user:{ev.user}")
+        st = self.failed.get(key)
+        if st is None or ts - st["last"] > self.w:
+            st = self.failed[key] = {"reported": False, "pending": [], "last": ts}
+            self.src_users.pop(key, None)
+        st["last"] = max(st["last"], ts)
+        users = self.src_users.setdefault(key, {})
+        users[ev.user] = max(ts, users.get(ev.user, ts))
+        spray = False
+        if st["reported"]:
+            if allowed:
+                return None
+            st["pending"].append(ev.ref)
+            if len(st["pending"]) < self.n:
+                return None
+            refs, st["pending"] = st["pending"], []
+        else:
+            burst: list = []
+            if len(self.pair[pair_key]) >= self.fail_n:
+                burst = [x for x in self.pair[pair_key] if ts - x[0] <= self.w]
+            if len(burst) < self.fail_n:
+                if not ev.src_ip or len(users) < self.spray:
+                    return None
+                for name in [n for n, t in users.items() if ts - t > self.w]:
+                    del users[name]
+                if len(users) < self.spray:
+                    return None
+                spray = True
+                burst = [x for x in self.by_src[(host, ev.src_ip)] if ts - x[0] <= self.w]
+            st["reported"] = True
+            refs = [x[1] for x in burst]
+        who = ev.src_ip or f"user {ev.user}"
+        many = len(users) > 1
+        title = (f"password spray with no success yet: {len(users)} users failed from {who}" if spray
+                 else f"{len(refs)} failed logons from {who} with no success yet")
+        if allowed:
+            return Suppressed(self.name, host, ts, "approved authentication source", allowed, refs,
+                              {"title": title, "src_ip": ev.src_ip})
+        user = None if many else ev.user
+        sig = [("variant:failed_only", 0)]
+        if ev.src_ip and not is_private_ip(ev.src_ip):
+            sig.append(("external source IP", 10))
+        return Candidate(self.name, host, ev.src_ip or f"user:{ev.user}", ts, title,
+                         ["T1110 Brute Force"], refs, sig,
+                         {"variant": "failed_only", "failures": len(refs), "user": user,
+                          "src_ip": ev.src_ip},
+                         [("block_ip", ev.src_ip)] if ev.src_ip else [],
+                         user=user, src_ip=ev.src_ip)
 
     def on_event(self, ev: Event) -> list:
         if ev.category != "auth" or ev.outcome not in ("success", "failure"):
@@ -146,6 +276,10 @@ class BruteForce:
                 dq = d[key]
                 self._add(dq, item)
                 self._trim(dq, dq[-1][0])
+            if self.fail_only:
+                item = self._failed_only(ev, k, allowed)
+                if item is not None:
+                    out.append(item)
             if allowed or len(self.pair[k]) < self.n:
                 return out
             need_watch = k not in self.watched
@@ -200,7 +334,7 @@ class BruteForce:
             {"variant": kind, "failures": len(fails), "user": user, "src_ip": ev.src_ip,
              "first_failure_ts": fails[0][0], "logon_type": ev.logon_type},
             [("block_ip", ev.src_ip)] if ev.src_ip else [],
-            user=user, src_ip=ev.src_ip,
+            user=user, src_ip=ev.src_ip, escalates=True,
         )
         if user:
             cand.blocks.append(("lock_account", user))
@@ -209,6 +343,9 @@ class BruteForce:
         self.by_src.pop((host, ip), None)
         self.by_user.pop((host, user), None)
         self.watched.discard((host, ip, user))
+        source = (host, ev.src_ip or f"user:{user}")
+        self.failed.pop(source, None)
+        self.src_users.pop(source, None)
         if allowed:
             return [Suppressed(self.name, host, ts, "approved authentication source", allowed,
                                all_refs, {"title": title, "user": user, "src_ip": ev.src_ip})]
@@ -322,9 +459,10 @@ class TempService:
         return v.strip().strip('"').strip("'").replace('\\"', '"')
 
     def _cand(self, ev: Event, binary: str, name: str | None, how: str, level: str) -> list:
-        if self.allow.service_match(name, binary, ev.ts, ev.host):
+        approved = self.allow.service_match(name, binary, ev.ts, ev.host)
+        if approved:
             return [Suppressed(self.name, ev.host, ev.ts, f"approved service {name or binary}",
-                               self.allow.service_match(name, binary, ev.ts, ev.host), [ev.ref],
+                               approved, [ev.ref],
                                {"binary": binary, "service": name})]
         sig = [(f"signal:{how}", 0)]
         if level == "medium":
@@ -498,6 +636,11 @@ class FIM:
         self.crit_pre = tuple(c["critical_prefixes"])
         self.watched = tuple(c["watched_dirs"])
 
+    def export_baseline(self) -> dict:
+        """The loaded baseline plus learned and approved content, in loadable form."""
+        return {"files": self.base_by_host["*"],
+                "hosts": {h: v for h, v in self.base_by_host.items() if h != "*"}}
+
     def _critical(self, p: str) -> bool:
         return p in self.crit or p.startswith(self.crit_pre)
 
@@ -550,7 +693,9 @@ class FIM:
                 return []      # identical content (touch / same-hash rewrite)
             a = next(a for a in common if new[a] != known[a])
             new_h = new[a]
-            allow = self.allow.fim_match(p, new_h, ev.ts, ev.host)
+            candidates = (self.allow.fim_match(p, h, ev.ts, ev.host)
+                          for algo, h in new.items() if known.get(algo) != h)
+            allow = next((match for match in candidates if match), None)
             if allow:
                 store(p, new)   # approved: the new content becomes the baseline
                 return [Suppressed(self.name, ev.host, ev.ts, "approved change", allow, [ev.ref],

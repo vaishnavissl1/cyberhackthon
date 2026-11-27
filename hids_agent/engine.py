@@ -9,7 +9,7 @@ from typing import Callable
 from .allowlist import AllowList
 from .config import SEV_ORDER, sev_from_score
 from .normalize import Event, is_private_ip, norm_path, parse_hashes
-from .rules import (FIM, BruteForce, Candidate, OfficeShell, PreBlock, ProcessTable,
+from .rules import (FIM, Approvals, BruteForce, Candidate, OfficeShell, PreBlock, ProcessTable,
                     Suppressed, TempService, Watch)
 
 Sink = Callable[[str, dict], None]
@@ -74,6 +74,7 @@ class Engine:
             TempService(cfg, allow, self.pt),
             OfficeShell(cfg, allow, self.pt),
             FIM(cfg, allow, baseline),
+            Approvals(cfg, allow),
         ]
         self.min_sev = SEV_ORDER.index(cfg["alert_min_severity"])
         self.cooldown = float(cfg["cooldown_s"])
@@ -181,12 +182,15 @@ class Engine:
                         seen.add(ref)
                         a["evidence"].append(ref)
                 a["hits"] += 1
+                if c.escalates:
+                    a.update(title=c.title, context=c.context, user=c.user, mitre=c.mitre)
                 score, sigs = self._score(c)
                 if score > a["score"]:
                     a["score"], a["signals"], a["severity"], a["context"] = score, sigs, sev_from_score(score), c.context
                 self._respond(a, c)
                 self.sink("alert_update", {"id": aid, "last_seen": a["last_seen"], "hits": a["hits"],
                                            "score": a["score"], "severity": a["severity"],
+                                           "title": a["title"],
                                            "new_evidence": c.evidence})
                 return
         score, sigs = self._score(c)

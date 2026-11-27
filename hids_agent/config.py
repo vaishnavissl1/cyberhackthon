@@ -19,6 +19,16 @@ DEFAULTS: dict[str, Any] = {
         "spray_users": 5, "dist_sources": 3,
         "skip_machine_accounts": True,
         "preempt_block_factor": 0,         # optional failure-only block at n_fail*factor
+        "alert_without_success": False,    # True: failures alone raise an alert (per source)
+        "failures_without_success": 10,    # failures within window_s needed for that alert
+    },
+    "approvals": {
+        # Approval events inside the stream. Off by default: anyone who can write to the
+        # stream could otherwise approve their own attack.
+        "from_stream": False,
+        "trusted_approvers": [],           # names; empty trusts nobody, ["*"] trusts any
+        "default_ttl_s": 3600,
+        "max_ttl_s": 86400,
     },
     "temp_service": {
         "temp_roots": [

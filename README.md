@@ -34,13 +34,21 @@ python -m hids_agent.agent --input runs/holdout-input/events-mixed.jsonl --basel
 python -m hids_agent.evaluate --out runs/frozen-holdout --labels runs/holdout-input/labels.json
 ~~~
 
-The generator writes an ordered raw stream, labels, baseline and allow-list. Its optional mixed stream adds alternate field styles, a duplicate, a malformed line and, in holdout, out-of-order records. Tune on development only. A raw tuning sweep keeps full-recall trials, ranks by fewer false alarms and breaks ties using lower count and severity thresholds, longer correlation windows and a shorter grouping cooldown. With no full-recall setting the tuner exits with status 1 and writes no selected config.
+The generator writes a raw stream, labels, baseline and allow-list. Its optional mixed stream adds alternate field styles, a duplicate, a malformed line and alternate timestamps. The holdout also contains out-of-order records. Tune on development only. A raw tuning sweep keeps full-recall trials, ranks by fewer false alarms and breaks ties using lower count and severity thresholds, longer correlation windows and a shorter grouping cooldown. With no full-recall setting the tuner exits with status 1 and writes no selected config.
 
 Labels include `attack_id`, `type`, `host`, `start`, `end` and optional `event_ids`. `--stream` evaluates a saved run against embedded sequence annotations read with the same framing as detection. The detector drops label fields before running any rule. A scoped shared reference takes precedence. Time-only labels require a host, recognized rule and interval. Independent observations within one alert may match different sequences. Ambiguous observations are flagged. Recall counts distinct matched sequences. Precision counts matched alerts. With an undefined denominator, the metric is unavailable.
 
 The labeled target is PASS when all sequences are found, there are at most two false alarms, and at least one active simulated decision is linked to a matching observation. `hids_agent.evaluate` exits 0 on PASS, 1 on FAIL or INCOMPLETE, and 2 on an input or usage error. Runs without labels show UNSCORED.
 
 The `run` subcommand can also import a candidate JSONL handoff. The files in `examples/` give a three-event Office case, its candidate example and an independent label. Both entry points use the same scoring and response engine.
+
+## Detection options
+
+Use `--learn-baseline --save-baseline PATH` on a trusted replay to export a reusable baseline. JSONL follow mode and the TCP and HTTP adapters are available through `hids_agent.agent --help`. HTTP requires a Content-Length header.
+
+By default, authentication alerts require a successful logon after failures. `bruteforce.alert_without_success` also enables alerts for a source that reaches `bruteforce.failures_without_success`. A subsequent successful logon can update that alert.
+
+Stream approval events default to watch records. Use `approvals.from_stream` and an explicit `approvals.trusted_approvers` list only with a trusted event source. The approver name is a field in the replay. Confirm the organizer's approval-event schema before enabling it.
 
 ## Dashboard and journals
 
