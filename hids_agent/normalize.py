@@ -165,7 +165,7 @@ _MAPS: dict[str, dict[str, str]] = {"category": {}, "outcome": {}, "action": {}}
 
 
 def configure(schema: dict | None) -> None:
-    """Apply organizer-specific field names and value maps (config "schema").
+    """Apply dataset-specific field names and value maps (config "schema").
     Configured aliases take priority over the built-in ones."""
     schema = schema or {}
     _ALIAS_INDEX.clear()

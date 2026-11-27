@@ -187,7 +187,7 @@ def main(argv=None):
     group = cli.add_mutually_exclusive_group(required=True)
     group.add_argument("--labels", type=Path)
     group.add_argument("--embedded-labels", type=Path, help="tagged raw events as JSONL")
-    group.add_argument("--stream", type=Path, help="organizer stream with embedded labels")
+    group.add_argument("--stream", type=Path, help="stream with embedded labels")
     cli.add_argument("--slack", type=float, default=60)
     args = cli.parse_args(argv)
     try:

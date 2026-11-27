@@ -1,4 +1,4 @@
-"""Load organizer label files and embedded event annotations."""
+"""Load label files and embedded event annotations."""
 
 from pathlib import Path
 

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 from itertools import product
 from pathlib import Path
 
@@ -73,7 +74,26 @@ def main():
                     "alert_min_severity": sorted(set(args.min_severities), key=SEV_ORDER.index)}
             results = search(grid, raw_trial, labels)
             kept = [t for t in results["trials"] if t["recall"] == 1.0]
-            results["best"] = min(kept, key=lambda t: t["false_alarms"], default=None)
+            # Among settings with full recall and the fewest false alarms, take the one
+            # closest to the defaults. Picking the most lenient tie over-fits: on 30
+            # unseen streams a tie-winning 4-failure threshold alerted on users who
+            # simply mistyped 4 times, while the defaults passed every stream.
+            from .config import load_config
+            base = load_config(args.config)
+            ref = {**{k: base["bruteforce"][k] for k in ("n_fail", "window_s", "success_within_s", "spray_users")},
+                   "cooldown_s": base["cooldown_s"], "alert_min_severity": base["alert_min_severity"]}
+
+            def distance(config):
+                d = 0.0
+                for k, v in config.items():
+                    if k == "alert_min_severity":
+                        d += abs(SEV_ORDER.index(v) - SEV_ORDER.index(ref[k]))
+                    elif ref.get(k):
+                        d += abs(math.log(max(v, 1) / ref[k]))
+                return d
+
+            results["best"] = min(kept, key=lambda t: (t["false_alarms"], distance(t["config"])), default=None)
+            results["selection"] = "full recall, then fewest false alarms, then closest to the defaults"
             if args.report_out:
                 write_json(args.report_out, results)
             print(json.dumps(results, indent=2))

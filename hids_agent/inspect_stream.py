@@ -22,18 +22,28 @@ from .normalize import ALIASES, LABEL_FIELDS, configure, flatten, normalize
 
 NEEDED = {
     "auth": ("user", "outcome"),
-    "process": ("image", "pid", "ppid"),
-    "file": ("path", "hashes"),
+    "process": ("image",),
+    "file": ("path",),
     "service": ("service_path",),
 }
 USEFUL = {
     "auth": ("src_ip",),
-    "process": ("parent_image", "cmdline"),
-    "file": ("action",),
+    "process": ("pid", "ppid", "parent_image", "cmdline"),
+    "file": ("hashes",),
     "service": ("service_name",),
 }
 TYPE_KEYS = ("category", "event_type", "eventtype", "type", "event.category", "event.type", "kind",
              "action", "event.action", "eventid", "event_id", "event.code")
+
+
+def _dotted(d, prefix=""):
+    """Full dotted names of leaf values (no short copies)."""
+    for k, v in d.items():
+        key = f"{prefix}.{k}".lower() if prefix else str(k).lower()
+        if isinstance(v, dict):
+            yield from _dotted(v, key)
+        else:
+            yield key, v
 
 
 def inspect(items, schema: dict | None = None) -> dict:
@@ -62,9 +72,9 @@ def inspect(items, schema: dict | None = None) -> dict:
         hosts[ev.host] += 1
         with_ids += ev.has_explicit_id
         flat = flatten(raw)
-        for k, v in flat.items():
+        for k, v in _dotted(raw):
             leaf = k.rsplit(".", 1)[-1]
-            if not isinstance(v, dict) and k not in known and leaf not in known:
+            if k not in known and leaf not in known:
                 unread[k] += 1
         if ev.category == "other":
             sig = tuple(f"{k}={flat[k]}" for k in TYPE_KEYS if k in flat and not isinstance(flat[k], (dict, list)))

@@ -13,9 +13,22 @@ python -m hids_agent demo --out runs/demo
 python -m hids_agent demo --split holdout --out runs/holdout
 ~~~
 
-These commands run the detector on generated raw events with independent labels. Open `dashboard.html` in the run directory. A synthetic PASS describes that fixture. The organizer development and hidden streams still need separate evaluation.
+These commands run the detector on a small scripted fixture with independent labels. Open `dashboard.html` in the run directory. For the full development and hidden test streams, see the next section.
 
-## First run on organizer data
+## Test data: build, replay and score
+
+No dataset is supplied for this problem, so we build our own development and hidden streams. `build_dataset` writes about 31,000 events over 6 hours on 8 hosts in real log layouts (Windows Security 4624/4625/4688/7045, Sysmon 1/11/23, ECS-style JSON, Linux sshd syslog and a FIM agent format). Attacks are hidden among normal activity and look-alikes: users who mistype then log in, users behind one shared address, internet scanners that never succeed, admin-installed services, an approved patch service in a temp folder, an approved macro, PID reuse, same-hash rewrites and approved file changes. Attack details are randomized per seed, and the hidden split adds 7 variants that never appear in development. The answer key goes to `labels.json` and never into the stream.
+
+~~~powershell
+python -m hids_agent.build_dataset --split dev --seed 1 --out runs/ds/dev-1
+python -m hids_agent.build_dataset --split hidden --seed 101 --out runs/ds/hidden-101
+python -m hids_agent.tune --events runs/ds/dev-1/events.jsonl --labels runs/ds/dev-1/labels.json --baseline runs/ds/dev-1/baseline.json --allowlist runs/ds/dev-1/allowlist.json --failures 4 5 6 8 --windows 120 300 600 --success-delays 300 600 --spray-users 4 5 6 --cooldowns 900 --min-severities medium high --config-out runs/ds/frozen.json --report-out runs/ds/sweep.json
+python -m hids_agent.replay_stream runs/ds/hidden-101/events.jsonl --speed 600 | python -m hids_agent.agent --config runs/ds/frozen.json --baseline runs/ds/hidden-101/baseline.json --allowlist runs/ds/hidden-101/allowlist.json --labels runs/ds/hidden-101/labels.json --sweep runs/ds/sweep.json --out runs/ds/hidden-101/out
+~~~
+
+`replay_stream` plays the role of the replay script: it writes the file to stdout line by line (`--speed N` plays N event-seconds per real second; 0 sends at once). The tuner keeps settings with full recall, then the fewest false alarms, then the setting closest to the defaults. Breaking ties toward the most lenient setting over-fitted in testing (see below).
+
+## First run on any new dataset
 
 Check that the agent understands the stream before trusting any result:
 
@@ -32,14 +45,14 @@ It lists unclassified event types, missing key fields per category and raw field
             "action_map": {"spawn": "start"}}}
 ~~~
 
-For organizer input or the sample stream, use the same agent entry point:
+For any other stream or the sample stream, use the same agent entry point:
 
 ~~~powershell
-python provided_replay.py | python -m hids_agent.agent --labels data/dev_labels.json --out runs/organizer
+python -m hids_agent.replay_stream events.jsonl | python -m hids_agent.agent --labels labels.json --out runs/new
 python -m hids_agent.agent --input data/sample_stream.jsonl --baseline data/baseline.example.json --allowlist data/allowlist.example.json --out runs/sample
 ~~~
 
-Omit `--labels` when ground truth is unavailable. Pass `--mode detect` to keep requested decisions on the alert and leave the block journal empty. For an organizer run, supply its baseline and allow-list if available. Inspect `summary.json` for unrecognized events and processing errors, then use `errors.log` to investigate failures. Record how service creation appears in the raw stream. If permitted, label sequences from the raw stream independently before evaluating.
+Omit `--labels` when ground truth is unavailable. Pass `--mode detect` to keep requested decisions on the alert and leave the block journal empty. Supply a baseline and allow-list if the dataset has them. Inspect `summary.json` for unrecognized events and processing errors, then use `errors.log` to investigate failures. Record how service creation appears in the raw stream. If permitted, label sequences from the raw stream independently before evaluating.
 
 ## Generate, tune, and evaluate
 
@@ -67,7 +80,7 @@ By default, authentication alerts require a successful logon after failures. `br
 
 A password spray is confirmed after `bruteforce.spray_grace_s` (120 s) and only when at most `spray_max_success_ratio` (half) of the failing users then log in from that address. Users behind a shared address (NAT or proxy) who mistype and then log in are recorded as a watch note, not an alert. The other brute-force variants alert immediately.
 
-Stream approval events default to watch records. Use `approvals.from_stream` and an explicit `approvals.trusted_approvers` list only with a trusted event source. The approver name is a field in the replay. Confirm the organizer's approval-event schema before enabling it.
+Stream approval events default to watch records. Use `approvals.from_stream` and an explicit `approvals.trusted_approvers` list only with a trusted event source. The approver name is a field in the replay. Confirm the dataset's approval-event schema before enabling it.
 
 ## Dashboard and journals
 
@@ -90,15 +103,17 @@ The default response records blocks after a confirmed detection. A failure-only 
 
 ## Evidence collected so far
 
-These results come from our own runs, not the organizers' streams. The hidden-stream result stays unknown until the organizers score it.
-
 | Test | Result |
 | --- | --- |
-| 50 generated streams (25 seeds each of development and holdout, mixed field styles) | 50/50 PASS: 300/300 attacks found, 0 false alarms, a linked block in every run |
+| **Core target on 30 hidden streams** (`build_dataset --split hidden`, seeds 101 to 130), config tuned on development seed 1 only; stream 101 replayed through `replay_stream` into the agent | **30/30 PASS: 690/690 attack sequences found (23 variants, 30 of each), 0 false alarms in every stream, a linked block in every stream.** Detection latency median 6 s, 95th percentile 248 s (slow brute force and the spray grace period), maximum 348 s |
+| Same 30 streams with the tuner's earlier tie-break (most lenient tied setting: 4 failures, 600 s window) | 20/30 PASS: every miss was a false alarm on a user who mistyped 4 times. This is why the tuner now prefers settings closest to the defaults |
+| `gen_synthetic` scripted fixture, 25 seeds each of dev and holdout | 50/50 PASS. Its seeds change background timing only; the attacks are the same script each time |
 | 278 real attack recordings from the public [EVTX-ATTACK-SAMPLES](https://github.com/sbousseaden/EVTX-ATTACK-SAMPLES) set (37,364 Windows events; 2 files unreadable on Windows because antivirus locked them) | All 1,834 relevant events (logons 4624/4625/4771, process 4688 and Sysmon 1, service 7045, Sysmon file events) read with every key field; 0 processing errors; one alert, a real malware sample where a fake `WINWORD.exe` in `AppData` started `cmd` |
 | Throughput on one Windows laptop | About 26,000 to 33,000 raw events/s from 100,000 to 400,000 events, linear |
 
 The real recordings carry no labels, so they measure format coverage and noise, not recall. They contain no Office macro or temp-folder service examples.
+
+Limits of this evidence: we wrote the dataset builder knowing the rules, so passing it shows the rules handle the attack variants we designed, in real log layouts, among realistic noise. It cannot show how the agent does on attack variants nobody thought of. The real-recording test and the tuner over-fit finding above are the checks against that bias.
 
 ## Verify and present
 

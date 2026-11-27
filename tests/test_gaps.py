@@ -152,7 +152,7 @@ class TestInspectStream(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("UNCLASSIFIED", r.stdout)
         self.assertIn("evt=logon_evt", r.stdout)
-        self.assertIn("MISSING REQUIRED in process events: pid (1), ppid (1)", r.stdout)
+        self.assertIn("missing (optional) in process events: pid (1), ppid (1)", r.stdout)
         self.assertIn("acct", r.stdout)
         self.assertIn("malformed 1", r.stdout)
 

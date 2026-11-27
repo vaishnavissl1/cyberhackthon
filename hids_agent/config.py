@@ -28,7 +28,7 @@ DEFAULTS: dict[str, Any] = {
         "spray_grace_s": 120,
     },
     "schema": {
-        # Organizer-specific names, so a new stream format needs no code change.
+        # Dataset-specific names, so a new stream format needs no code change.
         "field_aliases": {},               # e.g. {"user": ["acct"], "src_ip": ["origin"]}
         "category_map": {},                # raw event type -> auth | process | file | service | approval
         "outcome_map": {},                 # raw outcome -> success | failure
