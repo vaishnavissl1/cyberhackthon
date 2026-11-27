@@ -2,7 +2,16 @@
 
 A standard-library Python agent for replayed host telemetry. It detects brute force followed by a success, services running from temporary directories, Office spawning a shell, and file changes against a hash baseline. It records simulated prevention decisions and generates an HTML case dashboard. The replay never executes commands or changes the host.
 
-See the [implementation plan](HIDS_HIPS_Implementation_Plan.docx) for the original scope and work split.
+Team 5-14: Ch Vaishnavi S S L (BL.EN.U4CSE23267), detection core; Athish Kulakudi Suresh (BL.EN.U4CSE23210), response, measurement and dashboard.
+
+- [Presentation](docs/HIDS_HIPS_Presentation.pptx) (10 slides)
+- [Viva guide](docs/HIDS_HIPS_Viva_Guide.docx): the whole project explained simply, with a question bank
+
+**Result:** tuned on one development stream, then scored on 30 unseen hidden streams replayed through a pipe: 30/30 pass the core target, 690/690 attack sequences found, 0 false alarms, a block logged in every stream. Reproduce with:
+
+~~~powershell
+python -m hids_agent.suite --hidden 30 --out runs/suite
+~~~
 
 ## Run a case
 
